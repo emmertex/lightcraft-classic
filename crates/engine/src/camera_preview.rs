@@ -101,12 +101,97 @@ pub(crate) fn starting_colour(
     lens: Option<&LensGeometry>,
     embedded: Option<&lcc_develop::EmbeddedLens>,
 ) -> (Xy, CameraTransform, Option<CameraLook>) {
-    let (xy, t, look) = starting_colour_with(raw, |raw, t| fit_preview(raw, bytes, t, lens), |raw, t| monochrome_look(raw, bytes, t, lens));
+    starting_colour_traced(raw, bytes, lens, embedded, &mut StartTrace::default())
+}
+
+/// [`starting_colour`], saying in `trace` which of its steps gave the colour and the tone (`photo.sourceReport`).
+pub(crate) fn starting_colour_traced(
+    raw: &mut RawImage,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lcc_develop::EmbeddedLens>,
+    trace: &mut StartTrace,
+) -> (Xy, CameraTransform, Option<CameraLook>) {
+    let entry = raw.metadata.model.as_deref().and_then(|model| lcc_camdb::find(raw.metadata.make.as_deref(), model));
+    let from = std::cell::Cell::new(None);
+    let fit = |raw: &RawImage, t: &CameraTransform| {
+        let (look, black_and_white, f) = fit_preview_from(raw, bytes, t, lens);
+        from.set(f);
+        (look, black_and_white)
+    };
+    let (xy, t, look) = starting_colour_traced_from(raw, entry, fit, |raw, t| monochrome_look(raw, bytes, t, lens), trace);
+    // a look that is the camera profile's colour, the photo's own fit having failed
+    if matches!(trace.colour, ColourSource::CameraJpeg { .. }) {
+        let tone = match from.get() {
+            Some(LookFrom::ProfileJpegTone) => Some(ToneSource::CameraJpeg),
+            Some(LookFrom::ProfilePooledTone) => Some(ToneSource::ProfilePooled),
+            Some(LookFrom::ProfileDefaultTone) => Some(ToneSource::Default),
+            Some(LookFrom::Fitted) | None => None,
+        };
+        if let Some(tone) = tone {
+            *trace = StartTrace { colour: ColourSource::CameraProfile, tone };
+        }
+    }
     if look.is_none() && dng_tone_eligible(raw, &t) {
         let look = fit_dng_tone(raw, bytes, &t, embedded);
+        if look.is_some() {
+            trace.tone = ToneSource::DngToneFit;
+        }
         return (xy, t, look);
     }
     (xy, t, look)
+}
+
+/// Which step of [`starting_colour`] gave a raw its colour.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub(crate) enum ColourSource {
+    /// The file's own colour matrices (DNG tags, or matrices its decoder has for it).
+    #[default]
+    File,
+    /// Measured matrices from the camera database (`lcc_camdb`).
+    #[serde(rename_all = "camelCase")]
+    MeasuredDatabase { make: String, model: String, provenance: String },
+    /// A look fitted to the file's camera JPEG; `camera_profile`: a profile pooled for the model was offered to the fit.
+    #[serde(rename_all = "camelCase")]
+    CameraJpeg { camera_profile: bool },
+    /// The camera database's matrices of another provenance (measured spectral sensitivities, estimates).
+    #[serde(rename_all = "camelCase")]
+    Database { make: String, model: String, provenance: String },
+    /// No look fitted the camera JPEG: the colour of the camera profile for the model.
+    CameraProfile,
+    /// An ARW of a Sony body without matrices of its own: another Sony sensor's spectral matrices.
+    #[serde(rename_all = "camelCase")]
+    SpectralStandIn { make: String, model: String },
+    /// No matrices for the camera: the neutral fallback.
+    NeutralFallback,
+}
+
+/// Where a raw's starting tone curve came from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ToneSource {
+    /// None from the starting colour (a DNG's own `ProfileToneCurve` may still give one).
+    #[default]
+    None,
+    /// Fitted with the look to the camera JPEG.
+    CameraJpeg,
+    /// Fitted to a black-and-white camera JPEG on top of the colour it got otherwise.
+    MonochromeJpeg,
+    /// Fitted for a DNG whose tone the file leaves undefined ([`fit_dng_tone`]).
+    DngToneFit,
+    /// The camera profile's tone curve, pooled from many photos of the model.
+    ProfilePooled,
+    /// The app's default raw tone curve.
+    Default,
+}
+
+/// What [`starting_colour_traced`] reports.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartTrace {
+    pub colour: ColourSource,
+    pub tone: ToneSource,
 }
 
 /// Whether the profile's tone curve is absent or the identity (within 0.005 over the range).
@@ -131,6 +216,7 @@ pub(crate) fn dng_tone_eligible(raw: &RawImage, t: &CameraTransform) -> bool {
 
 /// [`starting_colour`] with the JPEG fit (the look, and whether the JPEG is black and white) and the black-and-white
 /// JPEG's tone fit passed in (tests pin the order with them).
+#[cfg(test)]
 fn starting_colour_with(
     raw: &mut RawImage,
     fit: impl FnOnce(&RawImage, &CameraTransform) -> (Option<CameraLook>, bool),
@@ -141,43 +227,68 @@ fn starting_colour_with(
 }
 
 /// [`starting_colour_with`] with the camera database entry passed in.
+#[cfg(test)]
 fn starting_colour_from(
     raw: &mut RawImage,
     entry: Option<lcc_camdb::Entry>,
     fit: impl FnOnce(&RawImage, &CameraTransform) -> (Option<CameraLook>, bool),
     monochrome: impl FnOnce(&RawImage, &CameraTransform) -> Option<CameraLook>,
 ) -> (Xy, CameraTransform, Option<CameraLook>) {
+    starting_colour_traced_from(raw, entry, fit, monochrome, &mut StartTrace::default())
+}
+
+/// [`starting_colour_from`], saying which step gave the colour and the tone in `trace`.
+fn starting_colour_traced_from(
+    raw: &mut RawImage,
+    entry: Option<lcc_camdb::Entry>,
+    fit: impl FnOnce(&RawImage, &CameraTransform) -> (Option<CameraLook>, bool),
+    monochrome: impl FnOnce(&RawImage, &CameraTransform) -> Option<CameraLook>,
+    trace: &mut StartTrace,
+) -> (Xy, CameraTransform, Option<CameraLook>) {
+    let named = |e: &lcc_camdb::Entry| (e.make.clone(), e.model.clone(), format!("{:?}", e.provenance.source));
     let start = |raw: &RawImage| {
         let xy = lcc_raw::color::as_shot_white_xy(raw);
         (xy, lcc_raw::color::camera_transform(raw, xy))
     };
     let measured = entry.as_ref().is_some_and(|e| e.provenance.source.is_measured());
+    let mut measured_matrix = false;
     if let Some(e) = &entry {
         // levels always; matrices now only when measured (the JPEG fit outranks spectral and estimated colour)
         let applied = if measured { e.apply(raw) } else { lcc_camdb::Entry { color_matrix: [None, None], ..e.clone() }.apply(raw) };
+        measured_matrix = measured && applied.matrix;
         if lcc_pipeline::profiling() && (applied.matrix || applied.levels) {
             eprintln!("[profile] {:?} camera database {} {} ({:?}): {applied:?}", raw.format, e.make, e.model, e.provenance.source);
         }
     }
     let (xy, t) = start(raw);
     if !t.matrix_is_fallback {
+        trace.colour = match entry.as_ref().filter(|_| measured_matrix).map(named) {
+            Some((make, model, provenance)) => ColourSource::MeasuredDatabase { make, model, provenance },
+            None => ColourSource::File,
+        };
         return (xy, t, None);
     }
     let (look, black_and_white) = fit(raw, &t);
     if let Some(look) = look {
+        let camera_profile = file_local_look(raw.format) && raw.metadata.model.as_deref().and_then(crate::camera_profiles::get).is_some();
+        *trace = StartTrace { colour: ColourSource::CameraJpeg { camera_profile }, tone: ToneSource::CameraJpeg };
         return (xy, t, Some(look));
     }
+    trace.colour = ColourSource::NeutralFallback;
     let (xy, t) = match entry.filter(|_| !measured) {
         Some(e) if e.apply(raw).matrix => {
             if lcc_pipeline::profiling() {
                 eprintln!("[profile] {:?} camera colour from the camera database: {} {} ({:?})", raw.format, e.make, e.model, e.provenance.source);
             }
+            let (make, model, provenance) = named(&e);
+            trace.colour = ColourSource::Database { make, model, provenance };
             start(raw)
         }
         // a Sony body without database matrices: another Sony sensor's are far closer than the neutral fallback's
         _ => match lcc_raw::spectral::stand_in(raw.format) {
             Some(camera) => {
                 camera.fill(&mut raw.color);
+                trace.colour = ColourSource::SpectralStandIn { make: camera.make.to_string(), model: camera.model.to_string() };
                 if lcc_pipeline::profiling() {
                     eprintln!(
                         "[profile] {:?} camera colour from spectral sensitivities: {} {}, standing in for this body",
@@ -191,6 +302,9 @@ fn starting_colour_from(
     };
     // only a black-and-white JPEG: a colour one that gave no look pays nothing more
     let look = if black_and_white { monochrome(raw, &t) } else { None };
+    if look.is_some() {
+        trace.tone = ToneSource::MonochromeJpeg;
+    }
     (xy, t, look)
 }
 
@@ -304,11 +418,36 @@ fn dng_tone_curve(tone: &CameraTone) -> Option<ToneCurve> {
 }
 
 /// The look fitted to the file's camera JPEG, and whether that JPEG is black and white ([`monochrome`]).
+#[cfg(test)]
 pub(crate) fn fit_preview(raw: &RawImage, bytes: &[u8], transform: &CameraTransform, lens: Option<&LensGeometry>) -> (Option<CameraLook>, bool) {
+    let (look, black_and_white, _) = fit_preview_from(raw, bytes, transform, lens);
+    (look, black_and_white)
+}
+
+/// Where a look from [`fit_preview`] came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LookFrom {
+    /// Fitted to the camera JPEG.
+    Fitted,
+    /// The camera profile's colour with the JPEG's tone curve ([`with_profile_colour`]).
+    ProfileJpegTone,
+    /// The camera profile's colour and pooled tone curve.
+    ProfilePooledTone,
+    /// The camera profile's colour and the default raw tone curve.
+    ProfileDefaultTone,
+}
+
+/// [`fit_preview`], saying where its look came from.
+pub(crate) fn fit_preview_from(
+    raw: &RawImage,
+    bytes: &[u8],
+    transform: &CameraTransform,
+    lens: Option<&LensGeometry>,
+) -> (Option<CameraLook>, bool, Option<LookFrom>) {
     if !transform.matrix_is_fallback || !file_local_look(raw.format) {
-        return (None, false);
+        return (None, false, None);
     }
-    let Some((sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, 0.0, lens) else { return (None, false) };
+    let Some((sensor, reference, clipped)) = proxies(raw, bytes, transform, PROXY, 0.0, lens) else { return (None, false, None) };
     let black_and_white = monochrome(&reference);
     // A camera profile pooled from many photos knows colours this photo shows too little of;
     // try its colour first and fit tone/chroma per photo (picture styles vary).
@@ -320,7 +459,7 @@ pub(crate) fn fit_preview(raw: &RawImage, bytes: &[u8], transform: &CameraTransf
         let unclipped = without_clipped(&sensor, &clipped);
         fit_tone_only(unclipped.as_ref().unwrap_or(&sensor), &reference, Some(colour))
     };
-    let Some(look) = with_profile_colour(fitted, colour, pooled, tone_only) else { return (None, black_and_white) };
+    let Some((look, from)) = with_profile_colour_from(fitted, colour, pooled, tone_only) else { return (None, black_and_white, None) };
     // the camera's own curve past what this photo's JPEG showed
     let look = match pooled {
         Some(pooled) => CameraLook { tone: extend_tone(&look.tone, &pooled), ..look },
@@ -340,7 +479,7 @@ pub(crate) fn fit_preview(raw: &RawImage, bytes: &[u8], transform: &CameraTransf
             profile.is_some()
         );
     }
-    (Some(look), black_and_white)
+    (Some(look), black_and_white, Some(from))
 }
 
 /// `fitted`, the photo's own look, or when no look fits it (a black-and-white JPEG has no colour; a dark one too few
@@ -348,17 +487,35 @@ pub(crate) fn fit_preview(raw: &RawImage, bytes: &[u8], transform: &CameraTransf
 /// (`monochrome_look` does it without a profile), else the profile's pooled tone curve, else the default raw one. Dropping the profile there for the
 /// neutral fallback left a NIKON D780 frame 3.7 EV under, pushed back up, at 37% of its properly exposed twin's chroma
 /// (88-99% with the profile's colour).
+#[cfg(test)]
 fn with_profile_colour(
     fitted: Option<CameraLook>,
     colour: Option<(Mat3, Option<HsvTable>)>,
     pooled: Option<CameraTone>,
     tone_only: impl FnOnce((Mat3, Option<HsvTable>)) -> Option<CameraLook>,
 ) -> Option<CameraLook> {
-    if fitted.is_some() {
-        return fitted;
+    with_profile_colour_from(fitted, colour, pooled, tone_only).map(|(look, _)| look)
+}
+
+/// [`with_profile_colour`], saying where the look came from.
+fn with_profile_colour_from(
+    fitted: Option<CameraLook>,
+    colour: Option<(Mat3, Option<HsvTable>)>,
+    pooled: Option<CameraTone>,
+    tone_only: impl FnOnce((Mat3, Option<HsvTable>)) -> Option<CameraLook>,
+) -> Option<(CameraLook, LookFrom)> {
+    if let Some(look) = fitted {
+        return Some((look, LookFrom::Fitted));
     }
     let colour = colour?;
-    tone_only(colour.clone()).or_else(|| Some(CameraLook { matrix: colour.0, tone: pooled.or_else(CameraTone::default_raw)?, hue_sat: colour.1 }))
+    if let Some(look) = tone_only(colour.clone()) {
+        return Some((look, LookFrom::ProfileJpegTone));
+    }
+    let (tone, from) = match pooled {
+        Some(tone) => (tone, LookFrom::ProfilePooledTone),
+        None => (CameraTone::default_raw()?, LookFrom::ProfileDefaultTone),
+    };
+    Some((CameraLook { matrix: colour.0, tone, hue_sat: colour.1 }, from))
 }
 
 /// Sensor level (normalised, white = 1) at or above which a raw channel counts as clipped, as in
@@ -2818,6 +2975,48 @@ mod tests {
         assert_eq!(raw.color, lcc_raw::ColorData::default());
     }
 
+    /// The trace (`photo.sourceReport`) names the step that gave the colour and the tone, for each step.
+    #[test]
+    fn the_trace_names_each_step() {
+        let lookup = |raw: &RawImage| raw.metadata.model.as_deref().and_then(|m| lcc_camdb::find(raw.metadata.make.as_deref(), m));
+        let traced = |raw: &mut RawImage, entry, fit: Option<CameraLook>, black_and_white: bool, mono: Option<CameraLook>| {
+            let mut trace = StartTrace::default();
+            starting_colour_traced_from(raw, entry, |_, _| (fit, black_and_white), |_, _| mono, &mut trace);
+            trace
+        };
+        let fitted = dro_test_look(&std::array::from_fn(|i| 0.006 * 1.13f32.powi(i as i32)), &|x| x.sqrt());
+        // 1. the file's own matrices
+        let own = Mat3([[0.6, -0.1, -0.05], [-0.4, 1.3, 0.1], [-0.1, 0.2, 0.7]]);
+        let color = lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(own), None], ..Default::default() };
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 600D", color);
+        let e = lookup(&raw);
+        assert_eq!(traced(&mut raw, e, None, false, None), StartTrace { colour: ColourSource::File, tone: ToneSource::None });
+        // 2. measured database matrices
+        let mut entry = lcc_camdb::find(Some("Canon"), "Canon EOS 600D").unwrap();
+        entry.provenance.source = lcc_camdb::Source::NativeDng;
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 600D", Default::default());
+        let t = traced(&mut raw, Some(entry.clone()), None, false, None);
+        assert!(matches!(&t.colour, ColourSource::MeasuredDatabase { model, .. } if model == &entry.model), "{t:?}");
+        // 3. the camera JPEG fit, with a bundled camera profile offered (ILCE-7M4) or not
+        let mut raw = raw_of(RawFormat::Arw, "SONY", "ILCE-7M4", Default::default());
+        let e = lookup(&raw);
+        let t = traced(&mut raw, e, Some(fitted.clone()), false, None);
+        assert_eq!(t, StartTrace { colour: ColourSource::CameraJpeg { camera_profile: true }, tone: ToneSource::CameraJpeg });
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 7D", Default::default());
+        let t = traced(&mut raw, None, Some(fitted.clone()), false, None);
+        assert_eq!(t.colour, ColourSource::CameraJpeg { camera_profile: crate::camera_profiles::get("Canon EOS 7D").is_some() });
+        // 4. the database's spectral matrices after a failed fit, with a black-and-white JPEG's tone on top
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 600D", Default::default());
+        let e = lookup(&raw);
+        let toned = CameraLook { matrix: Mat3::IDENTITY, tone: fitted.tone, hue_sat: None };
+        let t = traced(&mut raw, e, None, true, Some(toned));
+        assert!(matches!(&t.colour, ColourSource::Database { provenance, .. } if provenance.contains("Spectral")), "{t:?}");
+        assert_eq!(t.tone, ToneSource::MonochromeJpeg);
+        // 5. the neutral fallback
+        let mut raw = raw_of(RawFormat::Cr2, "Canon", "Canon EOS 7D", Default::default());
+        assert_eq!(traced(&mut raw, None, None, false, None), StartTrace { colour: ColourSource::NeutralFallback, tone: ToneSource::None });
+    }
+
     /// Step 5: a camera outside the table whose fit fails keeps the neutral fallback.
     #[test]
     fn a_camera_outside_the_table_keeps_the_fallback() {
@@ -2858,6 +3057,10 @@ mod tests {
             let w = t.matrix.apply([1.0; 3]);
             assert!(w.iter().all(|v| (v - 1.0).abs() < 1e-4), "{w:?}");
         }
+        let mut raw = raw_of(RawFormat::Arw, "SONY", "ILCE-1M2", Default::default());
+        let mut trace = StartTrace::default();
+        starting_colour_traced_from(&mut raw, None, |_, _| (None, false), |_, _| None, &mut trace);
+        assert!(matches!(&trace.colour, ColourSource::SpectralStandIn { model, .. } if model == stand_in.model), "{trace:?}");
         assert_eq!(lcc_raw::spectral::find(Some("SONY"), "ILCE-1M2"), None);
         assert_eq!(lcc_catalog::relative_wb_camera("ARW", "SONY ILCE-1M2"), !lcc_raw::kelvin_presets::covers(Some("SONY"), "ILCE-1M2"));
         // the same failure outside ARW keeps the neutral fallback
@@ -4138,6 +4341,19 @@ mod tests {
         let own = with_profile_colour(Some(toned.clone()), Some(colour), None, |_| unreachable!()).unwrap();
         assert_eq!(own.matrix, toned.matrix);
         assert!(with_profile_colour(None, None, None, |_| unreachable!()).is_none());
+    }
+
+    /// `photo.sourceReport` tells a profile's colour kept for a photo no look fits from a fitted look, and names its tone.
+    #[test]
+    fn the_profile_colours_source_is_told_apart() {
+        let colour = (Mat3::IDENTITY, None);
+        let toned = dro_test_look(&std::array::from_fn(|i| 0.01 + i as f32 * 0.01), &|x| 0.9 * x);
+        let from =
+            |fitted, pooled, tone: Option<CameraLook>| with_profile_colour_from(fitted, Some(colour.clone()), pooled, |_| tone).map(|(_, f)| f);
+        assert_eq!(from(Some(toned.clone()), None, None), Some(LookFrom::Fitted));
+        assert_eq!(from(None, None, Some(toned.clone())), Some(LookFrom::ProfileJpegTone));
+        assert_eq!(from(None, Some(toned.tone), None), Some(LookFrom::ProfilePooledTone));
+        assert_eq!(from(None, None, None), Some(LookFrom::ProfileDefaultTone));
     }
 
     /// A camera curve: a toe, then a shoulder toward 0.95, the shape camera JPEG curves have.

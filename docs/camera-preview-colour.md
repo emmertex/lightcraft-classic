@@ -215,6 +215,16 @@ Before this, such a photo fell to 5 or 6 and the profile did nothing for it. Mea
 
 On the same D780 brackets with the profile refitted with its tone curve (255 photos), the pushed frames match the reference's lightness: ΔL\* −0.2 to +0.5 for every frame (−1 to −7 before), median CIEDE2000 in the L\* 40-70 band 0.9-2.6 (2.0-13.5 before), hue within 5°. Colourfulness in the second burst comes out 16-28% above the reference in midtones. On 40 D780 photos the profile never saw, rendered unedited and compared with their camera JPEGs, the curve changes nothing that matters: mean ΔE 2.67 with the colour-only profile, 2.68 with the curve (2.77 without a profile), mean ΔL\* +0.71 → +0.73, one photo worse by more than 0.25 (0.38).
 
+`photo.sourceReport {ids}` (a read-only command; agents and `<cli>` scripts can run it) says which step a photo's
+original took: `colour.kind` is `file` (1), `measuredDatabase` (2), `cameraJpeg` (3 or 4: `cameraProfile` says a
+profile for the model was offered to the fit, not whether its colour was kept), `cameraProfile` (the profile's colour
+kept when no look fits, above), `database` (5, with the entry's provenance), `spectralStandIn` (an ARW of a Sony body
+outside the table: another Sony sensor's matrices) or `neutralFallback` (6), and `tone` where the starting tone curve
+came from (`profilePooled` and `default` for a kept profile colour). It also reports whether the sensor data or the
+embedded preview is shown, the file's own DNG look tags, Sony's DRO flag and the lens correction that applies by
+itself (`embedded`, or a database profile `found` by the lens name). Every value comes from the same code that opens
+the photo, decoding the file again.
+
 The spectral matrices only replace the neutral fallback: a photo whose JPEG fit is accepted (with or without a
 profile) renders exactly as before, and a covered model takes its spectral matrices only when that fit fails the
 gates or the file has no usable JPEG. White balance of a covered model is in Kelvin through its matrices whichever

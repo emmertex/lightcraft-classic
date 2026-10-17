@@ -345,7 +345,7 @@ pub fn probe_bytes(name: &str, bytes: &[u8]) -> Result<ProbeInfo, String> {
 /// decoder is verified on few bodies, and every CR3 opened from its embedded JPEG before it existed.
 /// So does any other failure of a recognised raw (damaged or oversized raw data, unreadable TIFF
 /// structure): its preview may still be intact. Only a file that is not a raw reports an error.
-fn preview_reason(bytes: &[u8], e: lcc_raw::RawError) -> Result<String, String> {
+pub(crate) fn preview_reason(bytes: &[u8], e: lcc_raw::RawError) -> Result<String, String> {
     use lcc_raw::RawError;
     match e {
         RawError::Unsupported(why) => Ok(why),
@@ -698,7 +698,7 @@ fn load_bytes_now(
 /// look stays the file's fit. Any other raw is edited relative to its as-shot look (6500 K / 0 means as shot).
 pub(crate) struct WbScaleOf {
     own_matrix: bool,
-    relative: bool,
+    pub(crate) relative: bool,
     /// Kelvin through the camera's measured matrices or presets: edited on the relative scale before those were used.
     legacy_relative: bool,
     /// The as-shot white through the measured matrices or the presets, when that is where the scale comes from.

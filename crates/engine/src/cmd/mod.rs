@@ -71,6 +71,7 @@ mod query;
 mod quick;
 pub mod recheck;
 mod slideshow;
+pub(crate) mod source;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tether;
@@ -223,6 +224,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(previews::specs());
         v.extend(lut_profiles::specs());
         v.extend(lens_db::specs());
+        v.extend(source::specs());
         v.extend(mask_effects::specs());
         v.extend(cull::specs());
         v.extend(convert::specs());

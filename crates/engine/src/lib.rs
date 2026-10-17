@@ -89,6 +89,7 @@ pub mod slide_title;
 pub mod slideshow;
 pub mod slideshow_export;
 pub mod smart;
+pub mod source_report;
 pub mod sync;
 pub mod text;
 pub mod timelapse;
@@ -1536,6 +1537,8 @@ mod tests_settings_files;
 mod tests_slide;
 #[cfg(test)]
 mod tests_slideshow_export;
+#[cfg(test)]
+mod tests_source_report;
 #[cfg(test)]
 mod tests_spots;
 #[cfg(test)]
