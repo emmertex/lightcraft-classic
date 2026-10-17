@@ -283,17 +283,20 @@ fn library_sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     ui.painter().rect_filled(r, 0.0, t.chrome);
     ui.painter().hline(r.x_range(), r.top() + 0.5, Stroke::new(1.0, t.divider));
     let several = app.session.active().is_some() && app.session.selection.ids.len() > 1;
+    // the two buttons share the bar's width, as the left column's Import… / Export… do (issue #221)
+    let (margin, gap) = (12.0, 8.0);
+    let w = crate::widgets::shared_width(r.width() - 2.0 * margin, 2, gap);
     ui.add_space(10.0);
     ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.add_space(margin);
+        ui.spacing_mut().item_spacing.x = gap;
         ui.add_enabled_ui(several, |ui| {
-            if crate::widgets::text_button(ui, "syncMetadata", crate::i18n::tr("Sync Metadata"), false).clicked()
+            if crate::widgets::text_button_wide(ui, "syncMetadata", crate::i18n::tr("Sync Metadata"), false, w).clicked()
                 && let Err(e) = app.run("photo.syncMetadata", json!({}))
             {
                 app.toast(ui.ctx(), e);
             }
-            if crate::widgets::text_button(ui, "syncSettings", crate::i18n::tr("Sync Settings"), false).clicked() {
+            if crate::widgets::text_button_wide(ui, "syncSettings", crate::i18n::tr("Sync Settings"), false, w).clicked() {
                 let _ = app.run("dialog.syncSettings", json!({}));
             }
         });

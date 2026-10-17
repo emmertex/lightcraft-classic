@@ -705,11 +705,22 @@ pub fn flyout_row(ui: &mut Ui, id: &str, title: &str, icon: Icon, open: bool) ->
 
 /// A small bordered text button (Auto, B&W, HDR…).
 pub fn text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response {
+    text_button_sized(ui, id, label, active, None)
+}
+
+/// [`text_button`] exactly `width` wide (at least 37 points), its label cut at the edges when it doesn't fit: for
+/// buttons that share a bar's width between them, as Lightroom Classic's do (issue #221).
+pub fn text_button_wide(ui: &mut Ui, id: &str, label: &str, active: bool, width: f32) -> Response {
+    text_button_sized(ui, id, label, active, Some(width))
+}
+
+fn text_button_sized(ui: &mut Ui, id: &str, label: &str, active: bool, width: Option<f32>) -> Response {
     let label = if id.starts_with("labelSet-") { label } else { crate::i18n::tr(label) };
     let t = Tokens::get(ui.ctx());
     let font = t.semibold(11.5);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, t.text);
-    let size = vec2((galley.size().x + 18.0).max(37.0), 24.0);
+    let w = width.filter(|w| w.is_finite()).unwrap_or(galley.size().x + 18.0);
+    let size = vec2(w.max(37.0), 24.0);
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label));
     register(ui.ctx(), format!("button:{id}"), r);
@@ -724,8 +735,14 @@ pub fn text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response
     // #122: an "on" choice gets a brighter edge as well as a brighter fill, so it reads as selected.
     let edge = if active { t.text_dim } else { t.button_border };
     p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, edge), StrokeKind::Inside);
-    p.galley(r.center() - galley.size() / 2.0, galley, t.text);
+    p.with_clip_rect(r.intersect(p.clip_rect())).galley(r.center() - galley.size() / 2.0, galley, t.text);
     resp
+}
+
+/// The width each of `n` buttons gets when they share `room` points, `gap` apart.
+pub fn shared_width(room: f32, n: usize, gap: f32) -> f32 {
+    let n = n.max(1) as f32;
+    ((room - gap * (n - 1.0)) / n).floor().max(0.0)
 }
 
 /// A segmented control: `labels` share the available width equally, `per_row` per row. Each segment is

@@ -85,6 +85,8 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_appearance;
 #[cfg(test)]
+mod tests_bar_buttons;
+#[cfg(test)]
 mod tests_before_after;
 #[cfg(test)]
 mod tests_browse_active;

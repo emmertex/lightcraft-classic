@@ -99,12 +99,15 @@ fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     ui.painter().hline(r.x_range(), r.top() + 0.5, egui::Stroke::new(1.0, t.divider));
     let auto = app.session.auto_sync;
     let several = app.session.selection.ids.len() > 1;
+    // after the switch, the two buttons share the rest of the bar (issue #221)
+    let (left, switch_w, gap, right) = (16.0, 30.0, 8.0, 12.0);
+    let w = crate::widgets::shared_width(r.width() - left - switch_w - gap - right, 2, gap);
     ui.add_space(10.0);
     ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.add_space(left);
+        ui.spacing_mut().item_spacing.x = gap;
         // the switch
-        let (sr, resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
+        let (sr, resp) = ui.allocate_exact_size(vec2(switch_w, 16.0), Sense::click());
         register(ui.ctx(), "button:autoSyncSwitch", sr);
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, auto, crate::i18n::tr("Auto Sync")));
         let p = ui.painter();
@@ -120,23 +123,20 @@ fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             (false, true) => ("syncBar", "Sync…"),
             (false, false) => ("previousBar", "Previous"),
         };
-        if text_button(ui, id, crate::i18n::tr(label), auto).clicked() {
+        if crate::widgets::text_button_wide(ui, id, crate::i18n::tr(label), auto, w).clicked() {
             let _ = match (auto, several) {
                 (true, _) => app.run("develop.autoSync", json!({"on": false})),
                 (false, true) => app.run("dialog.syncSettings", json!({})),
                 (false, false) => app.run("develop.pastePrevious", json!({})),
             };
         }
-        // Lightroom Classic: Reset at the right end of the bar
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            if text_button(ui, "reset", crate::i18n::tr("Reset"), false)
-                .on_hover_text(super::edit::reset_tip(&app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac))
-                .clicked()
-            {
-                let _ = app.run("develop.reset", json!({}));
-            }
-        });
+        // Lightroom Classic: Reset fills the bar's right half
+        if crate::widgets::text_button_wide(ui, "reset", crate::i18n::tr("Reset"), false, w)
+            .on_hover_text(super::edit::reset_tip(&app.ui.settings.keymap, ui.ctx().os() == egui::os::OperatingSystem::Mac))
+            .clicked()
+        {
+            let _ = app.run("develop.reset", json!({}));
+        }
     });
 }
 
