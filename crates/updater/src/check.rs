@@ -28,7 +28,7 @@ use lcc_net::{Client, ClientConfig};
 
 use crate::error::UpdateError;
 use crate::release::{self, Release};
-use crate::target::{Asset, Target};
+use crate::target::{Asset, Kind, Target};
 use crate::version::Version;
 
 /// Feed bodies are small; anything larger is not our release list.
@@ -50,6 +50,9 @@ pub struct Options {
     pub target: Option<Target>,
     /// Include prereleases (`-rc.1`) in what counts as newer.
     pub prerelease: bool,
+    /// This copy runs portable (a `portable.txt` beside the program): it takes the portable zip,
+    /// never an installer that would put the app somewhere else and leave this folder as it was.
+    pub portable: bool,
     /// A feed URL that replaces the release's own (a mirror, or a test's local feed); it must be
     /// `https://`. The files it offers still have to be on this repository's releases.
     pub manifest_url: Option<String>,
@@ -66,6 +69,7 @@ impl Default for Options {
             current: Version::current(),
             target: Target::current(),
             prerelease: false,
+            portable: false,
             manifest_url: None,
             extra_origin: None,
         }
@@ -128,7 +132,7 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
         return Ok(None);
     }
     // a file or checksum list on plain http is refused outright, not quietly passed over
-    for offered in [release.best_asset(&target), release.checksum_asset()].into_iter().flatten() {
+    for offered in [release.best_asset(&target, opts.portable), release.checksum_asset()].into_iter().flatten() {
         release_file(opts, &offered.url)?;
     }
     // only this repository's release downloads are offered, whatever else the feed lists
@@ -140,7 +144,7 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
             false
         }
     });
-    let Some(asset) = release.best_asset(&target).cloned() else {
+    let Some(asset) = release.best_asset(&target, opts.portable).cloned() else {
         return Err(UpdateError::NoAssetFor { version: release.version.to_text(), target: format!("{}-{}", target.os.slug(), target.arch) });
     };
     // the release's own checksum list, when it is not already in the feed entry
@@ -151,6 +155,7 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
             None => None,
         },
     };
+    let asset_kind = asset.kind;
     Ok(Some(Update {
         current: opts.current.clone(),
         version: release.version.clone(),
@@ -160,7 +165,11 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
         sha256,
         published: release.published.clone(),
         notes: release.notes.clone(),
-        action: target.describe(),
+        action: if opts.portable && asset_kind == Kind::Archive {
+            "download it and open the folder it is in, so you can unpack it over this copy".into()
+        } else {
+            target.describe()
+        },
     }))
 }
 
@@ -354,6 +363,7 @@ mod tests {
             current: Version::parse("1.0.0").expect("a version"),
             target: Some(Target { os: Os::Windows, arch: "x64" }),
             prerelease: false,
+            portable: false,
             manifest_url: None,
             extra_origin: None,
         }
@@ -596,5 +606,23 @@ mod tests {
         }
         let bsd = Options { target: Some(Target { os: Os::Freebsd, arch: "x86_64" }), ..older };
         assert!(matches!(run(&bsd, &release_0_8_1()), Err(UpdateError::NoAssetFor { .. })), "0.8.1 shipped no FreeBSD file");
+    }
+
+    /// A portable copy takes the portable zip and is told to unpack it, not the MSI (#229).
+    #[test]
+    fn a_portable_copy_takes_the_portable_zip() {
+        let bin = lcc_brand::BINARY;
+        let portable = Options { current: Version::parse("0.8.0").expect("v"), portable: true, ..opts() };
+        for arch in ["x64", "arm64"] {
+            let o = Options { target: Some(Target { os: Os::Windows, arch }), ..portable.clone() };
+            let u = run(&o, &release_0_8_1()).expect("a check").expect("an update");
+            assert_eq!(u.asset.name, format!("{bin}-0.8.1-windows-{arch}-portable.zip"), "{arch}");
+            assert!(u.action.contains("unpack"), "{}", u.action);
+        }
+        // the AppImage replaces itself where it is, so a portable Linux copy keeps it
+        let lin = Options { target: Some(Target { os: Os::Linux, arch: "x86_64" }), ..portable.clone() };
+        assert_eq!(run(&lin, &release_0_8_1()).expect("a check").expect("an update").asset.name, format!("{bin}-0.8.1-linux-x86_64.AppImage"));
+        // with no portable zip there is nothing for this copy: the MSI is not offered instead
+        assert!(matches!(run(&portable, &feed("1.2.0")), Err(UpdateError::NoAssetFor { .. })));
     }
 }

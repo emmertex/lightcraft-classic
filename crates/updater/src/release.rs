@@ -65,9 +65,11 @@ impl Release {
     }
 
     /// The file to install on `target`: an installer first, then a plain archive; `None` when the
-    /// release has nothing this platform can use.
-    pub fn best_asset(&self, target: &Target) -> Option<&Asset> {
-        self.assets.iter().filter(|a| a.kind != Kind::Checksums && target.matches_name(&a.name)).min_by_key(|a| (a.kind.rank(), a.size))
+    /// release has nothing this platform can use. A `portable` copy takes the portable zip, never an
+    /// installer ([`Target::matches_portable`]).
+    pub fn best_asset(&self, target: &Target, portable: bool) -> Option<&Asset> {
+        let ours = |name: &str| if portable { target.matches_portable(name) } else { target.matches_name(name) };
+        self.assets.iter().filter(|a| a.kind != Kind::Checksums && ours(&a.name)).min_by_key(|a| (a.kind.rank(), a.size))
     }
 
     /// The release's checksum list, when it publishes one.
@@ -187,13 +189,13 @@ mod tests {
     fn choices_the_installer_over_the_archive() {
         let r = newest(&feed(), false).expect("a release");
         let win = Target { os: crate::target::Os::Windows, arch: "x64" };
-        let picked = r.best_asset(&win).expect("an msi");
+        let picked = r.best_asset(&win, false).expect("an msi");
         assert_eq!((picked.name.as_str(), picked.kind), ("app-0.7.1-windows-x64.msi", Kind::Msi));
         assert_eq!(r.checksum_asset().map(|a| a.name.as_str()), Some("SHA256SUMS.txt"));
         let lin = Target { os: crate::target::Os::Linux, arch: "x86_64" };
-        assert_eq!(r.best_asset(&lin).map(|a| a.name.as_str()), Some("app-0.7.1-linux-x86_64.AppImage"));
+        assert_eq!(r.best_asset(&lin, false).map(|a| a.name.as_str()), Some("app-0.7.1-linux-x86_64.AppImage"));
         let arm = Target { os: crate::target::Os::Linux, arch: "aarch64" };
-        assert!(r.best_asset(&arm).is_none(), "no aarch64 file in this release");
+        assert!(r.best_asset(&arm, false).is_none(), "no aarch64 file in this release");
     }
 
     #[test]
@@ -239,6 +241,6 @@ mod tests {
         let v = serde_json::json!([{"tag_name": "v1.0.1", "assets": [{"name": "app-1.0.1-windows-x64.msi", "size": 1}]}]).to_string();
         let r = newest(&v, false).expect("a release");
         assert!(r.assets.is_empty());
-        assert!(r.best_asset(&Target { os: crate::target::Os::Windows, arch: "x64" }).is_none());
+        assert!(r.best_asset(&Target { os: crate::target::Os::Windows, arch: "x64" }, false).is_none());
     }
 }

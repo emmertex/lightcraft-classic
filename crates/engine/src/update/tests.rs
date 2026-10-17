@@ -544,3 +544,12 @@ fn a_local_http_feed_is_refused_without_the_test_origin() {
     assert_eq!(u.status()["feed"], format!("{base}/latest.json"), "the override is shown");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_portable_marker_beside_the_program_makes_the_check_portable() {
+    let dir = scratch("portable");
+    assert!(!portable_in(&dir), "no marker, an installed copy");
+    std::fs::write(dir.join("portable.txt"), b"").unwrap();
+    assert!(portable_in(&dir), "portable.txt beside the program");
+    let _ = std::fs::remove_dir_all(&dir);
+}

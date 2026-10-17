@@ -467,6 +467,7 @@ impl Updater {
     pub fn options(&self) -> lcc_updater::Options {
         lcc_updater::Options {
             prerelease: self.prefs.prerelease,
+            portable: std::env::current_exe().ok().and_then(|exe| exe.parent().map(portable_in)).unwrap_or(false),
             manifest_url: self.manifest_url.clone(),
             extra_origin: self.extra_origin.clone(),
             ..Default::default()
@@ -761,6 +762,12 @@ fn load_prefs(dir: &Path) -> Prefs {
             Prefs::default()
         }
     }
+}
+
+/// Whether `exe_dir` holds a portable marker (`portable.txt`), so the copy there updates from the
+/// portable zip instead of an installer.
+fn portable_in(exe_dir: &Path) -> bool {
+    crate::config::portable_markers().iter().any(|m| exe_dir.join(m).is_file())
 }
 
 /// The platform as the dialog words it (`linux-x86_64`).

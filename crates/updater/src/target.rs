@@ -158,6 +158,13 @@ impl Target {
         }
     }
 
+    /// [`Target::matches_name`] for a portable copy: the portable zip is its file, and an installer
+    /// is not (it would install the app somewhere else and leave this folder as it was).
+    pub fn matches_portable(&self, name: &str) -> bool {
+        let plain = name.to_ascii_lowercase().replace("-portable", "");
+        Kind::of(&plain) != Some(Kind::Msi) && self.matches_name(&plain)
+    }
+
     /// What the update will do, in one line, before anything is downloaded.
     pub fn describe(&self) -> String {
         match self.os {
@@ -229,6 +236,10 @@ mod tests {
         let lin = Target { os: Os::Linux, arch: "aarch64" };
         assert!(lin.matches_name("app-1.2.3-linux-aarch64.AppImage"));
         assert!(!lin.matches_name("app-1.2.3-linux-x86_64.AppImage"));
+        assert!(win.matches_portable("app-1.2.3-windows-x64-portable.zip"));
+        assert!(!win.matches_portable("app-1.2.3-windows-x64.msi"), "the installer is not a portable copy's file");
+        assert!(!win.matches_portable("app-1.2.3-windows-arm64-portable.zip"));
+        assert!(lin.matches_portable("app-1.2.3-linux-aarch64.AppImage"));
     }
 
     #[test]
