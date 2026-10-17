@@ -570,6 +570,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A photo AI Denoise can't use says why under its greyed-out switch, instead of looking broken: a raw that opens
+    /// as its embedded preview (a Nikon High Efficiency NEF) names the decoder's reason, a JPEG says raws only, and a
+    /// raw denoise does apply to says neither.
+    #[test]
+    fn detail_says_why_ai_denoise_does_not_apply() {
+        use lcc_catalog::{MediaKind, Op, Photo, PhotoId, Source};
+        let mut h = demo([1400.0, 1600.0]);
+        let t = Duration::from_secs(10);
+        let next = h.app.session.catalog.photos().map(|p| p.id.0).max().unwrap_or(0);
+        let add = |h: &mut Headless, n: u64, name: &str, format: &str, kind: MediaKind, preview_only: Option<&str>| {
+            let id = PhotoId(next + n);
+            let mut p = Photo::new(id, Source::File { path: format!("/denoise-why/{name}") }, name, format, 6000, 4000, "2026-10-01T00:00:00");
+            p.kind = kind;
+            p.preview_only = preview_only.map(str::to_string);
+            h.app.session.commit("setup", Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            id
+        };
+        let he = add(&mut h, 1, "DSC_0001.NEF", "NEF", MediaKind::Raw, Some("Nikon High Efficiency NEF (JPEG XS) is not decoded yet"));
+        let jpeg = add(&mut h, 2, "IMG_0002.jpg", "JPEG", MediaKind::Image, None);
+        let raw = add(&mut h, 3, "DSC_0003.NEF", "NEF", MediaKind::Raw, None);
+        h.request("ui.set", json!({"view": "detail"}), t);
+        h.app.ui.open_sections = vec!["detail".to_string()];
+        let shown = |h: &mut Headless, id: PhotoId| {
+            h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [id.0]}}), t);
+            h.settle(SETTLE);
+            h.step();
+            h.step();
+            h.view.painted_text().join("\n")
+        };
+        const PREVIEW: &str = "AI Denoise needs the raw sensor data, and this file opens as its embedded preview.";
+        const RAW_ONLY: &str = "AI Denoise works on raw files only.";
+        let text = shown(&mut h, he);
+        assert!(text.contains(PREVIEW), "a preview-only raw says why: {text}");
+        assert!(text.contains("Nikon High Efficiency NEF (JPEG XS) is not decoded yet."), "with the decoder's reason: {text}");
+        let text = shown(&mut h, jpeg);
+        assert!(text.contains(RAW_ONLY) && !text.contains(PREVIEW), "a JPEG says raws only: {text}");
+        let text = shown(&mut h, raw);
+        assert!(!text.contains(RAW_ONLY) && !text.contains(PREVIEW), "a raw denoise applies to explains nothing: {text}");
+    }
+
     /// Install from file… with a model the engine rejects says why in the AI Denoise section (#1381), instead of
     /// leaving the button looking dead.
     #[test]

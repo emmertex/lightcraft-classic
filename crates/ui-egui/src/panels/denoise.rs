@@ -133,7 +133,14 @@ fn watch_downloads(app: &mut LccApp, ctx: &egui::Context) {
 pub fn detail_toggle(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, on: bool, applicable: bool) {
     let mut enabled = on || crate::model_setup::denoise_requested(app, id);
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 6, bottom: 2 }).show(ui, |ui| {
-        let r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("AI Denoise")));
+        let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("AI Denoise")));
+        if !applicable && let Some((why, detail)) = not_applicable(app, id) {
+            let tip = match detail {
+                Some(d) => format!("{} {d}", tr(why)),
+                None => tr(why).to_string(),
+            };
+            r = r.on_disabled_hover_text(tip);
+        }
         register(ui.ctx(), "denoise:enabled", r.rect);
         if r.changed() {
             let _ = app.run("denoise.toggle", json!({"id": id.0, "enabled": enabled}));
@@ -150,7 +157,18 @@ pub fn detail_status(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, amount: f
         ui.add(egui::Label::new(RichText::new(crate::i18n::tr(text)).size(11.0).color(color)).wrap());
     };
     match state {
-        PhotoState::NotApplicable | PhotoState::Ready => {}
+        PhotoState::Ready => {}
+        PhotoState::NotApplicable => {
+            // the switch is greyed out: say why, or it looks broken
+            if let Some((why, detail)) = not_applicable(app, id) {
+                egui::Frame::NONE.inner_margin(pad).show(ui, |ui| {
+                    note(ui, why, t.text_dim);
+                    if let Some(d) = detail {
+                        ui.add(egui::Label::new(RichText::new(d).size(11.0).color(t.text_dim)).wrap());
+                    }
+                });
+            }
+        }
         PhotoState::NoModel => {
             egui::Frame::NONE.inner_margin(pad).show(ui, |ui| {
                 note(ui, "AI Denoise needs a model. Install one in Settings.", t.text_dim);
@@ -601,6 +619,23 @@ pub(super) fn mb(bytes: Option<u64>) -> String {
         Some(b) if b >= 1_000_000 => tr_format!("{:.1} MB", b as f64 / 1e6),
         Some(b) => tr_format!("{} KB", (b as f64 / 1e3).round().max(1.0) as u64),
         None => String::new(),
+    }
+}
+
+/// Why AI Denoise can't be used on photo `id`: a raw shown from its embedded preview, with the raw
+/// decoder's reason, or a file that isn't a raw. `None` when there is nothing to explain (a photo
+/// not in the library, in Recently Deleted, or one denoise does apply to).
+pub(crate) fn not_applicable(app: &LccApp, id: PhotoId) -> Option<(&'static str, Option<String>)> {
+    let p = app.session.catalog.photo(id)?;
+    if p.deleted {
+        return None;
+    }
+    match (&p.kind, &p.preview_only) {
+        (lcc_catalog::MediaKind::Raw, Some(why)) => {
+            Some(("AI Denoise needs the raw sensor data, and this file opens as its embedded preview.", Some(sentence(why))))
+        }
+        (lcc_catalog::MediaKind::Raw, None) => None,
+        _ => Some(("AI Denoise works on raw files only.", None)),
     }
 }
 
