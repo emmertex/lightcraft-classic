@@ -283,13 +283,39 @@ fn newer(what: String) -> CatalogError {
 /// A line that doesn't decode but ends with a whole record: a fragment of a failed append followed
 /// by the record that retried it (the retry re-encodes the same ops with the same `seq`s). Returns
 /// the fragment's length and the record, if that record continues the log (`seq <= last + 1`).
-/// The record's CRC must match, so damage is never mistaken for it.
+/// The record's CRC must match, so damage is never mistaken for it. The record is the line's last
+/// JSON object, found in one backwards pass over its braces (outside strings), so a damaged line full
+/// of record starts stays linear. Not simply the last `{"seq":` either: a smart-album rule's value can
+/// be an object with a `seq` key of its own. Port of upstream PR #2153.
 fn resync(line: &[u8], last: u64) -> Option<(usize, (u64, Op))> {
     const START: &[u8] = b"{\"seq\":";
-    (1..line.len().saturating_sub(START.len() - 1)).filter(|&i| line[i..].starts_with(START)).find_map(|i| {
-        let rec = std::str::from_utf8(&line[i..]).ok().map(|l| l.trim_end_matches('\r')).and_then(decode_record)?;
-        (rec.0 <= last.saturating_add(1)).then_some((i, rec))
-    })
+    let end = line.iter().rposition(|b| *b != b'\r')? + 1;
+    let line = line.get(..end)?;
+    if line.last() != Some(&b'}') {
+        return None;
+    }
+    let (mut depth, mut quoted) = (0usize, false);
+    for (at, byte) in line.iter().enumerate().rev() {
+        // a quote counts unless an odd number of backslashes escapes it
+        let escaped = || line.get(..at).is_some_and(|before| before.iter().rev().take_while(|b| **b == b'\\').count() % 2 == 1);
+        if *byte == b'"' && !escaped() {
+            quoted = !quoted;
+        } else if !quoted {
+            match byte {
+                b'}' => depth += 1,
+                b'{' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        let record = line.get(at..).filter(|r| at > 0 && r.starts_with(START))?;
+                        let rec = decode_record(std::str::from_utf8(record).ok()?)?;
+                        return (rec.0 <= last.saturating_add(1)).then_some((at, rec));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Write `catalog.snap` for the state after op `seq`, streaming the JSON into the store (no

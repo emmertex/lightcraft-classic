@@ -221,3 +221,30 @@ fn fs_store_truncates_a_missing_file_quietly() {
     assert_eq!(std::fs::read(dir.join(LOG)).unwrap(), b"");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A damaged log line full of record starts (`{"seq":` over and over) loads in linear time: only the line's
+/// last JSON object can be the retried record, so only that one is decoded.
+#[test]
+fn line_of_record_starts_loads_quickly() {
+    let m = MemStore::new();
+    let (mut j, mut c, _) = Journal::open(Box::new(m.clone())).unwrap();
+    let add = add_photo(&mut c);
+    let first = apply(&mut c, vec![add]);
+    j.append(&first).unwrap();
+    let good = m.get(LOG).unwrap();
+    drop(j);
+
+    for junk in ["{\"seq\":", "{\"seq\":1,\"crc\":1,\"op\":"] {
+        let mut log = good.clone();
+        let line = junk.repeat(300_000);
+        log.extend_from_slice(line.as_bytes());
+        log.push(b'\n');
+        let t = MemStore::new();
+        t.set(LOG, log);
+        let start = std::time::Instant::now();
+        let (_, loaded, r) = Journal::open(Box::new(t)).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{junk}: {:?}", start.elapsed());
+        assert_eq!((r.torn_bytes, r.torn_fragments), (line.len() as u64 + 1, 0), "{junk}");
+        assert_eq!(loaded.to_snapshot(), c.to_snapshot());
+    }
+}

@@ -250,6 +250,50 @@ fn record_codec() {
     assert_eq!(v["op"]["op"], "renameAlbum");
 }
 
+/// A retried record whose smart-album rules hold an object with a `seq` key of its own, and strings with
+/// braces, quotes and backslashes, is still found after the fragment before it (from upstream PR #2153).
+#[test]
+fn fragmented_record_keeps_nested_seq_values_and_escaped_strings() {
+    let rules = serde_json::from_value(serde_json::json!({
+        "rules": [{"field": "title", "op": "contains", "value": {"seq": {"text": "braces { } and quotes \" \\"}}}]
+    }))
+    .unwrap();
+    let album =
+        Album { smart: Some(Box::new(Filter { rule_set: Some(rules), ..Default::default() })), ..Album::new(AlbumId(1), "Größe ✓ { \" \\") };
+    let op = Op::AddAlbum { album: album.clone() };
+    let record = encode_record(1, &op);
+    assert_eq!(record.matches("{\"seq\":").count(), 2);
+    for fragment in [b"{\"seq\":".as_slice(), b"\xff\"{\\", b"garbage}"] {
+        let m = MemStore::new();
+        let mut log = fragment.to_vec();
+        log.extend_from_slice(record.as_bytes());
+        log.extend_from_slice(b"\r\n");
+        m.set(LOG, log);
+        let (_, loaded, report) = open(&m);
+        assert_eq!(loaded.album(album.id), Some(&album));
+        assert_eq!((report.replayed, report.torn_fragments, report.torn_bytes), (1, 1, 0));
+        assert!(report.damaged.is_none());
+    }
+}
+
+/// Many nested `seq` objects in one record: more than any fixed number of record starts tried from the end.
+#[test]
+fn a_record_with_many_nested_seq_values_is_found() {
+    let rules: Vec<serde_json::Value> = (0..20).map(|i| serde_json::json!({"field": "title", "op": "contains", "value": {"seq": i}})).collect();
+    let rules = serde_json::from_value(serde_json::json!({ "rules": rules })).unwrap();
+    let album = Album { smart: Some(Box::new(Filter { rule_set: Some(rules), ..Default::default() })), ..Album::new(AlbumId(1), "Many") };
+    let record = encode_record(1, &Op::AddAlbum { album: album.clone() });
+    assert!(record.matches("{\"seq\":").count() > 8);
+    let m = MemStore::new();
+    let mut log = b"{\"seq\":".to_vec();
+    log.extend_from_slice(record.as_bytes());
+    log.push(b'\n');
+    m.set(LOG, log);
+    let (_, loaded, report) = open(&m);
+    assert_eq!(loaded.album(album.id), Some(&album));
+    assert_eq!((report.replayed, report.torn_fragments), (1, 1));
+}
+
 #[test]
 fn push_history_is_bounded_and_invertible() {
     let mut c = Catalog::new();
