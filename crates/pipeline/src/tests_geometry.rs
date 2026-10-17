@@ -109,6 +109,28 @@ fn constrain_crop_removes_blank_areas() {
 }
 
 #[test]
+fn lens_distortion_auto_crops_blank_borders() {
+    use lcc_develop::{EmbeddedLens, EmbeddedWarp};
+    let src = Rgb32f::from_fn(90, 60, |x, y| [0.05 + 0.002 * x as f32, 0.1 + 0.002 * y as f32, 0.25]);
+    let lens = EmbeddedLens {
+        warp: Some(EmbeddedWarp {
+            planes: [[1.0, 0.06, -0.01, 0.0, 0.0, 0.0]; 3],
+            center: Point::new(0.5, 0.5),
+            radius: 90.0f64.hypot(60.0) / 2.0 / 90.0,
+        }),
+        ..Default::default()
+    };
+    let info = SourceInfo { lens: Some(lens), ..Default::default() };
+    let mut s = DevelopSettings::default();
+    s.optics.lens_profile = true;
+    let out = render(&src, &info, &s, &RenderRequest::fit(90, 90));
+    assert_eq!(blank_fraction(&out.image), 0.0, "lens profile correction must not leave BLANK border wedges");
+    // Dark source (`<= 0.3` linear): the topmost histogram bins must remain zero (no right-side BLANK spike).
+    let top_bins: u32 = out.histogram.luma[220..].iter().sum();
+    assert_eq!(top_bins, 0, "no right-side histogram spike from BLANK border pixels");
+}
+
+#[test]
 fn transforms_preview_matches_export() {
     let src = lcc_scenes::demo_library()[4].render(960, 640);
     let mut s = DevelopSettings::default();

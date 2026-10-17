@@ -585,6 +585,19 @@ fn crop_set_huge_rect_stays_finite() {
     }
 }
 
+/// Issue #211: dragging a crop handle outward while optical distortion correction is active stops
+/// at the valid inscribed boundary without moving opposite edges or sampling blank margins.
+#[test]
+fn crop_drag_clamps_to_inscribed_lens_bounds() {
+    let mut s = demo();
+    s.execute("develop.set", &json!({"control": "optics.distortion", "value": -60.0})).unwrap();
+    s.execute("crop.set", &json!({"rect": [0.2, 0.2, 0.8, 0.8]})).unwrap();
+    s.execute("crop.drag", &json!({"handle": "right", "from": [0.8, 0.5], "to": [1.0, 0.5], "start": [0.2, 0.2, 0.8, 0.8]})).unwrap();
+    let r = active_dev(&s).crop.geometry.rect;
+    assert!((r.x0 - 0.2).abs() < 1e-6 && (r.y0 - 0.2).abs() < 1e-6 && (r.y1 - 0.8).abs() < 1e-6, "anchored edges unchanged: {r:?}");
+    assert!(r.x1 > 0.8 && r.x1 < 1.0, "right handle clamped at inscribed edge: {r:?}");
+}
+
 /// `mask.move` with a delta near `i64::MAX` overflowed `index + delta` (a panic wherever overflow
 /// checks are on); extreme deltas and indices now move the mask to the bottom or the top.
 #[test]

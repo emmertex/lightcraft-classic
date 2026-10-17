@@ -372,6 +372,9 @@ pub(super) fn decode(bytes: &[u8], tiff: &Tiff, raw: &Ifd, mode: Mode) -> Result
     };
 
     let mut metadata = lcc_meta::from_tiff(tiff);
+    if metadata.lens_model.is_none() {
+        metadata.lens_model = mn.as_ref().and_then(|m| m.ifd.string(super::LENS_MODEL)).filter(|s| !s.is_empty());
+    }
     metadata.width = Some(active.width as u32);
     metadata.height = Some(active.height as u32);
     let img = RawImage {

@@ -240,6 +240,18 @@ pub fn lookup_with(
     h: f64,
     orientation: lcc_geom::Orientation,
 ) -> Option<(EmbeddedLens, Applied)> {
+    lookup_with_sensor_crop(db, m, given, w, h, 1.0, orientation)
+}
+
+fn lookup_with_sensor_crop(
+    db: &LensDb,
+    m: &lcc_meta::Metadata,
+    given: Option<&GivenLens>,
+    w: f64,
+    h: f64,
+    sensor_crop: f64,
+    orientation: lcc_geom::Orientation,
+) -> Option<(EmbeddedLens, Applied)> {
     let valid = |f: f64| f.is_finite() && f > 0.0;
     let camera = db.find_camera(m.make.as_deref().unwrap_or_default(), m.model.as_deref().unwrap_or_default());
     let (lens, focal, aperture, applied) = match given {
@@ -256,18 +268,30 @@ pub fn lookup_with(
         }
     };
     let aperture = aperture.filter(|a| valid(*a));
-    // the crop factor: the camera's, else what the 35 mm equivalent focal length implies
-    let crop = frame_crop_factor(camera.map(|c| c.crop_factor), focal, m.focal_length_35mm);
+    let sc = if sensor_crop.is_finite() && sensor_crop > 1.05 { sensor_crop } else { 1.0 };
+    let crop = frame_crop_factor(camera.map(|c| c.crop_factor * sc), focal, m.focal_length_35mm);
     let shot = Shot { focal, aperture, distance: None, crop_factor: crop, width: w, height: h };
     let corr = lens.correction(&shot)?;
     Some((lcc_pipeline::optics::reorient_lens(&corr, orientation, w, h), applied))
 }
 
-/// The crop factor of the recorded frame, which scales the profile's radii: the body's (`camera`), else what the
-/// 35 mm equivalent focal length implies. A body shooting a crop of its sensor (a full-frame camera in APS-C /
-/// Super 35 mode, or switched there by an APS-C lens) records a larger 35 mm equivalent than its own crop factor
-/// gives; the frame's corners are then nearer the optical axis, so that crop wins. Within 10 % of the body's, the
-/// difference is the tag's whole-millimetre rounding and the body's value stands.
+/// Diagonal ratio (`active_area / crop`) when `raw.crop` is an in-camera sub-frame crop (16:9, 4:3,
+/// 1:1, APS-C / 1.6x crop inside a full sensor) rather than a 1–2 % optical border margin.
+fn sensor_crop_ratio(raw: &lcc_raw::RawInfo) -> f64 {
+    let (aw, ah) = (raw.active_area.width as f64, raw.active_area.height as f64);
+    let c = raw.crop.clipped(raw.active_area.width, raw.active_area.height);
+    if c.width == 0 || c.height == 0 || aw < 2.0 || ah < 2.0 {
+        return 1.0;
+    }
+    let ratio = aw.hypot(ah) / (c.width as f64).hypot(c.height as f64).max(1.0);
+    if ratio.is_finite() && (1.05..=10.0).contains(&ratio) { ratio } else { 1.0 }
+}
+
+/// The crop factor of the recorded frame, which scales the profile's radii: the body's (`camera`, scaled by
+/// [`sensor_crop_ratio`] when `raw.crop` records an in-camera crop of the active area), else what the 35 mm equivalent
+/// focal length implies. Using the larger of the sensor-cropped body factor and the 35 mm equivalent avoids
+/// double-cropping when both `raw.crop` and `FocalLengthIn35mmFilm` reflect the same in-camera crop. Within 10 % of the
+/// body's, the difference is the tag's whole-millimetre rounding and the body's value stands.
 fn frame_crop_factor(camera: Option<f64>, focal: f64, focal_35mm: Option<f64>) -> Option<f64> {
     let frame = focal_35mm.map(|f35| f35 / focal).filter(|c| c.is_finite() && (0.1..=20.0).contains(c));
     match (camera, frame) {
@@ -287,7 +311,9 @@ pub fn resolve_raw(raw: &lcc_raw::RawInfo, meta: impl FnOnce() -> lcc_meta::Meta
     resolve(crate::files::embedded_lens(raw), || {
         let db = database()?;
         let (w, h) = raw.developed_size();
-        lookup_with(&db, &meta(), given, w as f64, h as f64, raw.orientation)
+        let mut m = meta();
+        m.fill_missing(&raw.metadata);
+        lookup_with_sensor_crop(&db, &m, given, w as f64, h as f64, sensor_crop_ratio(raw), raw.orientation)
     })
 }
 
@@ -570,6 +596,30 @@ mod tests {
         }
         assert_eq!(frame_crop_factor(None, 70.0, Some(105.0)), Some(1.5), "no body in the database: the 35 mm equivalent's");
         assert_eq!(frame_crop_factor(Some(1.0), 0.0, Some(105.0)), Some(1.0), "a hostile focal length is ignored");
+        let mut raw = lcc_raw::RawInfo {
+            format: lcc_raw::RawFormat::Cr3,
+            width: 6000,
+            height: 4000,
+            cpp: 1,
+            bits: 14,
+            active_area: lcc_raw::Rect::new(0, 0, 6000, 4000),
+            crop: lcc_raw::Rect::new(1125, 750, 3750, 2500),
+            orientation: Orientation::Normal,
+            wb_multipliers: None,
+            color: Default::default(),
+            pixel_aspect: 1.0,
+            opcodes: Default::default(),
+            metadata: m(None),
+            cfa: None,
+            lens_metadata: Default::default(),
+        };
+        assert!((sensor_crop_ratio(&raw) - 1.6).abs() < 1e-9);
+        let from_sensor = lookup_with_sensor_crop(&db, &m(None), None, 3750.0, 2500.0, sensor_crop_ratio(&raw), Orientation::Normal).unwrap().0;
+        let both = lookup_with_sensor_crop(&db, &m(Some(112.0)), None, 3750.0, 2500.0, sensor_crop_ratio(&raw), Orientation::Normal).unwrap().0;
+        assert_eq!(from_sensor, at(1.6, 3750.0, 2500.0));
+        assert_eq!(both, from_sensor, "35mm tag + sensor crop must not double-crop");
+        raw.crop = lcc_raw::Rect::new(12, 8, 5976, 3984);
+        assert_eq!(sensor_crop_ratio(&raw), 1.0, "optical border margin is not a sensor crop");
     }
 
     /// A synthetic grid recorded through the profile's barrel distortion comes out of the pipeline's geometry

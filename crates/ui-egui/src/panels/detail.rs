@@ -726,7 +726,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if !crop_tool || app.session.interaction.is_none() {
         app.crop_layout = None;
     }
-    let crop_view = crop_tool.then(|| crop_view(&frame, d.crop.geometry, main_area, app.crop_layout));
+    let crop_view =
+        crop_tool.then(|| crop_view(&frame, frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop), main_area, app.crop_layout));
     if let Some(v) = &crop_view {
         if app.session.interaction.is_some() && app.crop_layout.is_none() {
             app.crop_layout = Some(CropLayout::Pinned { centre: v.centre, k: v.k });
@@ -1945,9 +1946,10 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             return;
         }
         let d = app.session.develop_of(id).unwrap_or_default();
-        let (start, angle, map) = (d.crop.geometry.rect, d.crop.geometry.angle, *map);
+        let cg = frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop);
+        let (start, angle, map) = (cg.rect, cg.angle, *map);
         // screen points per pixel of the photo: the box's width on screen over its width in pixels
-        let native_w = Frame { crop: d.crop.geometry, ..frame.clone() }.native_size().0 as f32;
+        let native_w = Frame { crop: cg, ..frame.clone() }.native_size().0 as f32;
         let k = pts[0].distance(pts[1]) / native_w.max(1e-3);
         let pinned = Some(CropLayout::Pinned { centre: box_centre, k });
         let (gesture, layout) = match handles.iter().position(|h| h.distance(q) < 12.0) {
@@ -2016,7 +2018,7 @@ const CROP_HANDLE_NAMES: [&str; 9] = [
 /// undo step each), as a pointer drag from its place would. Return applies the crop. True when the
 /// frame is over (the crop was applied).
 fn crop_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, handles: &[Pos2], pts: &[Pos2], d: &DevelopSettings, frame: &Frame) -> bool {
-    let r = d.crop.geometry.rect;
+    let r = frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop).rect;
     let centre = if pts.len() == 4 { pts.iter().fold(Pos2::ZERO, |acc, q| acc + q.to_vec2() / 4.0) } else { return false };
     let pct = |v: f64| if v.is_finite() { (v * 100.0).round() as i64 } else { 0 };
     let value = format!("left {}%, top {}%, right {}%, bottom {}%", pct(r.x0), pct(r.y0), pct(r.x1), pct(r.y1));
@@ -2239,7 +2241,7 @@ fn outside_crop_mesh(photo: &[Pos2; 4], quad: &[Pos2; 4], color: Color32) -> egu
 }
 
 fn frame_crop_quad(d: &DevelopSettings, frame: &Frame) -> [Point; 4] {
-    let f = Frame { crop: d.crop.geometry, ..frame.clone() };
+    let f = Frame { crop: frame.constrained_crop(d.crop.geometry, d.geometry.constrain_crop), ..frame.clone() };
     f.crop_quad_norm()
 }
 

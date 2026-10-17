@@ -99,12 +99,16 @@ impl Warp {
         Point::new(self.w / 2.0, self.h / 2.0)
     }
 
-    /// Whether pixels move at all.
-    pub fn moves_pixels(&self) -> bool {
-        self.persp != Homography::IDENTITY
-            || self.k1 != 0.0
+    /// Whether optical distortion or chromatic aberration moves pixels (excluding perspective).
+    pub fn moves_optics(&self) -> bool {
+        self.k1 != 0.0
             || self.ca.iter().any(|c| *c != 0.0)
             || (self.lens_dist != 0.0 && self.lens.is_some_and(|l| l.warp.is_some() || l.has_stages()))
+    }
+
+    /// Whether pixels move at all.
+    pub fn moves_pixels(&self) -> bool {
+        self.persp != Homography::IDENTITY || self.moves_optics()
     }
 
     /// Whether the embedded lens warp is a `WarpRectilinear2` chain, whose degree-14 polynomials are ill-conditioned

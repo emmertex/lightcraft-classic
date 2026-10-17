@@ -43,6 +43,8 @@ const COLOR_BALANCE: u16 = 0x4001;
 const SHOT_INFO: u16 = 0x0004;
 /// WBInfo, the PowerShot G9's preset levels (it writes no `ColorData`).
 const WB_INFO: u16 = 0x0029;
+/// Canon MakerNote LensModel (`0x0095`, ASCII), written by EOS bodies before EXIF 2.3 `LensModel` (`0xa434`).
+const LENS_MODEL: u16 = 0x0095;
 
 fn raw_ifd(tiff: &Tiff) -> Option<&Ifd> {
     tiff.ifds.get(3).or_else(|| tiff.ifds.iter().rev().find(|i| i.contains(CR2_SLICE)))
@@ -266,6 +268,9 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         _ => BlackLevel::uniform(0.0),
     };
     let mut metadata = lcc_meta::from_tiff(&tiff);
+    if metadata.lens_model.is_none() {
+        metadata.lens_model = mn.as_ref().and_then(|m| m.ifd.string(LENS_MODEL)).filter(|s| !s.is_empty());
+    }
     metadata.width = Some(active.width as u32);
     metadata.height = Some(active.height as u32);
     let img = RawImage {
@@ -624,5 +629,15 @@ pub(crate) mod tests {
         let r = crate::decode(&bytes).unwrap();
         assert_eq!(r.active_area, Rect::new(left, top, w - left, h - top));
         assert!((13300.0..=13433.0).contains(&r.white[0]), "{:?}", r.white);
+    }
+
+    #[test]
+    fn makernote_lens_model_fallback() {
+        let (w, h) = (16, 16);
+        let img = vec![1024u16; w * h];
+        let mut bytes = synthetic_cr2_of(&img, w, h, None, Some(note_with(LENS_MODEL, 2, b"EF24-70mm f/2.8L II USM\0")));
+        patch_note(&mut bytes);
+        let info = crate::probe_info(&bytes).unwrap();
+        assert_eq!(info.metadata.lens_model.as_deref(), Some("EF24-70mm f/2.8L II USM"));
     }
 }

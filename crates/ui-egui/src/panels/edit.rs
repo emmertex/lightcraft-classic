@@ -342,6 +342,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             if ui.checkbox(&mut lp, crate::i18n::tr("Enable Lens Corrections")).changed() {
                 let _ = app.run("develop.merge", json!({"settings": {"optics": {"lens_profile": lp}}, "label": "Lens Corrections"}));
             }
+            let mut cc = d.geometry.constrain_crop;
+            if ui.checkbox(&mut cc, crate::i18n::tr("Constrain Crop")).changed() {
+                let _ = app.run("develop.merge", json!({"settings": {"geometry": {"constrain_crop": cc}}, "label": "Constrain Crop"}));
+            }
             if lp && !has_lens {
                 lens_note(app, ui, id);
             }

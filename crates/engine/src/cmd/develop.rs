@@ -600,13 +600,28 @@ pub fn specs() -> Vec<CommandSpec> {
                     _ => return Err(bad("crop.drag", "`start` needs 4 numbers")),
                 };
                 let keep_ratio = bool_or(p, "keepRatio", false);
+                let photo = s.catalog.photo(id);
+                let (sw, sh) = photo.map(|p| (p.width.max(1) as usize, p.height.max(1) as usize)).unwrap_or((300, 200));
+                let lens = photo.and_then(|p| p.embedded_lens.clone());
                 edit(s, "crop.drag", "Crop", |d| {
-                    let start = CropGeometry { rect: given.unwrap_or(d.crop.geometry.rect), angle: d.crop.geometry.angle };
+                    let f = lcc_pipeline::geometry::Frame::with_lens(sw, sh, d, false, lens.as_deref());
+                    let start = f.constrained_crop(
+                        CropGeometry { rect: given.unwrap_or(d.crop.geometry.rect), angle: d.crop.geometry.angle },
+                        d.geometry.constrain_crop,
+                    );
                     // A locked crop keeps the shape it has: the lock stores a width:height tuple whose
                     // orientation is reinterpreted per image, so the frame itself is the truth.
                     // `keepRatio` (Shift held) asks for the same thing for one drag without touching the lock.
                     let ratio = (d.crop.aspect.is_some() || keep_ratio).then(|| start.rect_px(w, h).aspect()).filter(|a| a.is_finite() && *a > 0.0);
-                    d.crop.geometry = drag_crop(start, handle, from, to, w, h, ratio);
+                    let mut next = drag_crop(start, handle, from, to, w, h, ratio);
+                    if ratio.is_none() && handle != CropHandle::Move {
+                        let bounds = lcc_pipeline::geometry::Frame { crop: next, ..f.clone() }.inscribed_rect_for(d.geometry.constrain_crop);
+                        let clamped = next.rect.intersect(&bounds);
+                        if !clamped.is_empty() {
+                            next.rect = clamped;
+                        }
+                    }
+                    d.crop.geometry = f.constrained_crop(next, d.geometry.constrain_crop);
                     Ok(())
                 })
             }

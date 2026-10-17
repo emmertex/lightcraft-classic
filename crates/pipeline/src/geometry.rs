@@ -77,38 +77,166 @@ impl Frame {
             warp: (!warp.is_identity()).then_some(warp),
             view: None,
         };
-        if apply_crop && s.geometry.constrain_crop {
-            f.constrain_to_image();
+        if apply_crop {
+            f.crop = f.constrained_crop(f.crop, s.geometry.constrain_crop);
         }
         f
     }
 
-    /// "Constrain Crop": shrink the crop about its centre until it contains no area outside the warped source.
-    fn constrain_to_image(&mut self) {
-        let Some(wp) = self.warp.as_ref().filter(|w| w.moves_pixels()) else { return };
-        let a = self.crop.output_to_source(self.ow, self.oh, 1.0, 1.0);
+    /// Whether normalized point `(u, v)` in the straightened frame (at `angle_deg`) maps inside the valid
+    /// source `[0, ow] × [0, oh]` across all active colour channels. When `include_persp` is `false`, only
+    /// the optical warp (`corrected_to_source`) is checked; when `true`, the full warp (`to_source`,
+    /// including perspective) is checked.
+    pub fn point_within_source(&self, u: f64, v: f64, angle_deg: f64, include_persp: bool) -> bool {
         let (w, h) = (self.ow, self.oh);
-        let fits = |t: f64| {
-            (0..=48).all(|i| {
-                let u = i as f64 / 48.0;
-                [(u, 0.0), (u, 1.0), (0.0, u), (1.0, u)].iter().all(|&(x, y)| {
-                    let p = Point::new(0.5 + t * (x - 0.5), 0.5 + t * (y - 0.5));
-                    let s = wp.to_source(a.apply(p), 1);
-                    s.x >= -1e-6 * w && s.y >= -1e-6 * h && s.x <= w * (1.0 + 1e-6) && s.y <= h * (1.0 + 1e-6)
-                })
-            })
+        let p = if angle_deg == 0.0 {
+            Point::new(u * w, v * h)
+        } else {
+            Affine::rotate_about(-angle_deg.to_radians(), Point::new(w / 2.0, h / 2.0)).apply(Point::new(u * w, v * h))
         };
-        if fits(1.0) {
-            return;
+        let in_bounds = |s: Point| s.x >= -1e-6 * w && s.y >= -1e-6 * h && s.x <= w * (1.0 + 1e-6) && s.y <= h * (1.0 + 1e-6);
+        let Some(wp) = self.warp.as_ref() else {
+            return in_bounds(p);
+        };
+        let active = if include_persp { wp.moves_pixels() } else { wp.moves_optics() };
+        if !active {
+            return in_bounds(p);
         }
-        let (mut lo, mut hi) = (0.0, 1.0);
-        for _ in 0..30 {
-            let m = (lo + hi) / 2.0;
-            if fits(m) { lo = m } else { hi = m }
+        let channels: &[usize] = if wp.per_channel() { &[0, 1, 2] } else { &[1] };
+        channels.iter().all(|&ch| {
+            let s = if include_persp { wp.to_source(p, ch) } else { wp.corrected_to_source(p, ch) };
+            in_bounds(s)
+        })
+    }
+
+    /// Whether all four edges of normalized rectangle `rect` (sampled at 49 points per edge) in the
+    /// straightened frame at `angle_deg` map inside the valid source image.
+    pub fn rect_within_source(&self, rect: Rect, angle_deg: f64, include_persp: bool) -> bool {
+        if rect.x0 < -1e-6 || rect.y0 < -1e-6 || rect.x1 > 1.0 + 1e-6 || rect.y1 > 1.0 + 1e-6 || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
+            return false;
         }
-        let t = lo.max(0.02);
-        let r = self.crop.rect;
-        self.crop.rect = Rect::from_center(r.center(), r.width() * t, r.height() * t);
+        (0..=48).all(|i| {
+            let t = i as f64 / 48.0;
+            let u = rect.x0 + t * (rect.x1 - rect.x0);
+            let v = rect.y0 + t * (rect.y1 - rect.y0);
+            self.point_within_source(u, rect.y0, angle_deg, include_persp)
+                && self.point_within_source(u, rect.y1, angle_deg, include_persp)
+                && self.point_within_source(rect.x0, v, angle_deg, include_persp)
+                && self.point_within_source(rect.x1, v, angle_deg, include_persp)
+        })
+    }
+
+    /// Constrain `crop` (preserving its aspect ratio) so its boundary never samples outside the valid
+    /// source image. When `include_persp` is `false`, only optical warps (distortion and lateral CA)
+    /// are constrained; when `true`, perspective transforms are constrained too.
+    pub fn constrained_crop(&self, crop: CropGeometry, include_persp: bool) -> CropGeometry {
+        let active = self.warp.as_ref().is_some_and(|w| if include_persp { w.moves_pixels() } else { w.moves_optics() });
+        if !active {
+            return crop;
+        }
+        let r = crop.rect;
+        if r.is_empty() || self.rect_within_source(r, crop.angle, include_persp) {
+            return crop;
+        }
+        let img_c = Point::new(0.5, 0.5);
+        let rc = r.center();
+        // If an off-centre crop can fit without shrinking by shifting towards the image centre,
+        // binary-search the smallest shift that keeps it inside the warped source.
+        if rc.dist(img_c) > 1e-6 && self.rect_within_source(Rect::from_center(img_c, r.width(), r.height()), crop.angle, include_persp) {
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for _ in 0..24 {
+                let m = (lo + hi) / 2.0;
+                let cand = Rect::from_center(rc.lerp(img_c, m), r.width(), r.height());
+                if self.rect_within_source(cand, crop.angle, include_persp) {
+                    hi = m;
+                } else {
+                    lo = m;
+                }
+            }
+            return CropGeometry { rect: Rect::from_center(rc.lerp(img_c, hi), r.width(), r.height()), angle: crop.angle };
+        }
+        // Shrink preserving aspect ratio. If the crop's own centre is inside the source, try shrinking
+        // about it; also compare against shrinking about the image centre so off-centre crops near a
+        // warped border don't over-shrink.
+        let scale_about = |c: Point| -> f64 {
+            if !self.point_within_source(c.x, c.y, crop.angle, include_persp) {
+                return 0.0;
+            }
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for _ in 0..30 {
+                let m = (lo + hi) / 2.0;
+                if self.rect_within_source(Rect::from_center(c, r.width() * m, r.height() * m), crop.angle, include_persp) {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            lo
+        };
+        let t_own = scale_about(rc);
+        let (t, base_c) = if rc.dist(img_c) <= 1e-6 {
+            (t_own.max(0.02), rc)
+        } else {
+            let t_img = scale_about(img_c);
+            if t_img > t_own { (t_img.max(0.02), img_c) } else { (t_own.max(0.02), rc) }
+        };
+        let (nw, nh) = (r.width() * t, r.height() * t);
+        let final_c = if base_c == img_c && rc.dist(img_c) > 1e-6 {
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for _ in 0..20 {
+                let m = (lo + hi) / 2.0;
+                if self.rect_within_source(Rect::from_center(img_c.lerp(rc, m), nw, nh), crop.angle, include_persp) {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            img_c.lerp(rc, lo)
+        } else {
+            base_c
+        };
+        CropGeometry { rect: Rect::from_center(final_c, nw, nh), angle: crop.angle }
+    }
+
+    /// Maximal axis-aligned inscribed rectangle `[x_min, y_min, x_max, y_max]` in `[0.0, 1.0]^2`
+    /// of the straightened frame whose boundary maps strictly inside the valid source image.
+    /// When `include_persp` is `false`, only optical warps (`corrected_to_source`) are considered;
+    /// when `true`, perspective (`to_source`) is included as well.
+    pub fn inscribed_rect_for(&self, include_persp: bool) -> Rect {
+        let mut r = self.constrained_crop(CropGeometry { rect: Rect::UNIT, angle: self.crop.angle }, include_persp).rect;
+        if r == Rect::UNIT {
+            return r;
+        }
+        for edge in 0..4 {
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for _ in 0..24 {
+                let m = (lo + hi) / 2.0;
+                let cand = match edge {
+                    0 => Rect::new(r.x0 * (1.0 - m), r.y0, r.x1, r.y1),
+                    1 => Rect::new(r.x0, r.y0 * (1.0 - m), r.x1, r.y1),
+                    2 => Rect::new(r.x0, r.y0, r.x1 + (1.0 - r.x1) * m, r.y1),
+                    _ => Rect::new(r.x0, r.y0, r.x1, r.y1 + (1.0 - r.y1) * m),
+                };
+                if self.rect_within_source(cand, self.crop.angle, include_persp) {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            r = match edge {
+                0 => Rect::new(r.x0 * (1.0 - lo), r.y0, r.x1, r.y1),
+                1 => Rect::new(r.x0, r.y0 * (1.0 - lo), r.x1, r.y1),
+                2 => Rect::new(r.x0, r.y0, r.x1 + (1.0 - r.x1) * lo, r.y1),
+                _ => Rect::new(r.x0, r.y0, r.x1, r.y1 + (1.0 - r.y1) * lo),
+            };
+        }
+        r
+    }
+
+    /// Maximal inscribed rectangle `[x_min, y_min, x_max, y_max]` in `[0.0, 1.0]^2` of the
+    /// straightened frame for the full warp of this [`Frame`].
+    pub fn inscribed_rect(&self) -> Rect {
+        self.inscribed_rect_for(true)
     }
 
     /// Long edge, in pixels, of the whole output this frame draws (its own size unless it is a
@@ -431,5 +559,73 @@ mod tests {
         // the whole image, mirrored: output top-left is the image's bottom-right
         let p = f.out_to_norm(400, 200).apply(Point::new(0.0, 0.0));
         assert!((p.x - 1.0).abs() < 1e-9 && (p.y - 1.0).abs() < 1e-9, "{p:?}");
+    }
+
+    /// Issue #211: barrel/pincushion distortion from a lens profile or manual slider auto-inscribes
+    /// the crop rectangle inside `[0, 1]^2` so no edge or corner samples outside `[0, ow] × [0, oh]`.
+    #[test]
+    fn optical_distortion_inscribes_crop_within_source() {
+        use lcc_develop::EmbeddedWarp;
+        let lens = EmbeddedLens {
+            warp: Some(EmbeddedWarp {
+                planes: [[1.0, 0.06, -0.01, 0.0, 0.0, 0.0], [1.0, 0.055, -0.01, 0.0, 0.0, 0.0], [1.0, 0.05, -0.01, 0.0, 0.0, 0.0]],
+                center: Point::new(0.5, 0.5),
+                radius: 300.0f64.hypot(200.0) / 2.0 / 300.0,
+            }),
+            ..Default::default()
+        };
+        let mut s = DevelopSettings::default();
+        s.optics.lens_profile = true;
+        // Even with `s.geometry.constrain_crop == false`, optical distortion is constrained to valid pixels.
+        let f = Frame::with_lens(300, 200, &s, true, Some(&lens));
+        let r = f.crop.rect;
+        assert!(r.x0 > 0.0 && r.y0 > 0.0 && r.x1 < 1.0 && r.y1 < 1.0, "crop inscribed inside unit square: {r:?}");
+        assert!((f.aspect() - 1.5).abs() < 1e-6, "aspect preserved: {}", f.aspect());
+        assert!(f.rect_within_source(r, f.crop.angle, false), "every edge point maps inside source: {r:?}");
+        let ins = f.inscribed_rect_for(false);
+        assert!(ins.x0 > 0.0 && ins.y0 > 0.0 && ins.x1 < 1.0 && ins.y1 < 1.0, "inscribed rect: {ins:?}");
+        assert!(f.rect_within_source(ins, f.crop.angle, false));
+
+        // Manual barrel distortion (`distortion < 0`, `k1 > 0`) and lateral CA also inscribe within `[0, 1]`.
+        let mut s2 = DevelopSettings::default();
+        s2.optics.distortion = -50.0;
+        s2.optics.ca_red = 40.0;
+        s2.optics.ca_blue = -40.0;
+        let f2 = Frame::new(300, 200, &s2, true);
+        assert!(f2.crop.rect.x0 > 0.0 && f2.crop.rect.x1 < 1.0, "{:?}", f2.crop.rect);
+        assert!(f2.rect_within_source(f2.crop.rect, f2.crop.angle, false));
+    }
+
+    /// Issue #211: toggling lens corrections on and off keeps user crop anchors stable in
+    /// post-distortion rectilinear coordinates and restores a full-frame crop without drift.
+    #[test]
+    fn toggling_lens_correction_preserves_crop_anchors() {
+        use lcc_develop::EmbeddedWarp;
+        let lens = EmbeddedLens {
+            warp: Some(EmbeddedWarp {
+                planes: [[1.0, 0.04, 0.0, 0.0, 0.0, 0.0]; 3],
+                center: Point::new(0.5, 0.5),
+                radius: 300.0f64.hypot(200.0) / 2.0 / 300.0,
+            }),
+            ..Default::default()
+        };
+        // 1. An interior user crop that already lies inside the inscribed region stays anchored at the exact
+        // same rectilinear coordinates whether lens corrections are off or on.
+        let mut s = DevelopSettings::default();
+        s.crop.geometry.rect = Rect::new(0.15, 0.15, 0.85, 0.85);
+        let f_off = Frame::with_lens(300, 200, &s, true, Some(&lens));
+        s.optics.lens_profile = true;
+        let f_on = Frame::with_lens(300, 200, &s, true, Some(&lens));
+        assert_eq!(f_off.crop, f_on.crop, "interior rectilinear crop anchor stays fixed");
+
+        // 2. An off-centre user crop touching a border shifts inward just enough to stay valid without losing size,
+        // and returns to its stored rect when lens corrections are turned back off.
+        s.crop.geometry.rect = Rect::new(0.0, 0.1, 0.5, 0.6);
+        let f_border_on = Frame::with_lens(300, 200, &s, true, Some(&lens));
+        assert!((f_border_on.crop.rect.width() - 0.5).abs() < 1e-6 && (f_border_on.crop.rect.height() - 0.5).abs() < 1e-6);
+        assert!(f_border_on.rect_within_source(f_border_on.crop.rect, 0.0, false));
+        s.optics.lens_profile = false;
+        let f_border_off = Frame::with_lens(300, 200, &s, true, Some(&lens));
+        assert_eq!(f_border_off.crop.rect, Rect::new(0.0, 0.1, 0.5, 0.6));
     }
 }

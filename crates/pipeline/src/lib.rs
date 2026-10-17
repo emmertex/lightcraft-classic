@@ -263,6 +263,9 @@ pub fn frame_for(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, apply_cro
     let mut frame = geometry::Frame::with_lens(src.width, src.height, s, apply_crop, info.lens.as_ref());
     if s.optics.remove_ca && s.section_enabled("optics") {
         frame.add_lateral_ca(optics::estimate_lateral_ca(src));
+        if apply_crop {
+            frame.crop = frame.constrained_crop(frame.crop, s.geometry.constrain_crop);
+        }
     }
     frame
 }
