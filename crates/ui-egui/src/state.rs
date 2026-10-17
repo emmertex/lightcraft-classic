@@ -1,5 +1,6 @@
 //! UI state (serde: saved as preferences, readable/settable through the control channel).
 
+pub use crate::theme::UiFontSize;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +353,8 @@ pub struct AppSettings {
     pub dark_theme: DarkTheme,
     /// The theme of the light appearance.
     pub light_theme: LightTheme,
+    /// Interface font size (Settings ▸ Interface).
+    pub ui_font_size: UiFontSize,
     /// Theme shortcuts in the appearance context menu.
     #[serde(deserialize_with = "deserialize_favorite_themes")]
     pub favorite_themes: Vec<String>,
@@ -401,6 +404,7 @@ impl Default for AppSettings {
             appearance_mode: AppearanceMode::Dark,
             dark_theme: DarkTheme::Charcoal,
             light_theme: LightTheme::Silver,
+            ui_font_size: UiFontSize::default(),
             favorite_themes: Vec::new(),
             display_profile: String::new(),
             color_readout: Default::default(),

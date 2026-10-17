@@ -263,7 +263,18 @@ pub fn install_fonts(ctx: &egui::Context) {
 
 /// Install the browser's separately downloaded Chinese face alongside the embedded faces.
 pub fn install_fonts_with_chinese(ctx: &egui::Context, chinese: Option<&Arc<FontData>>) {
-    ctx.set_fonts(font_definitions_with_chinese(lcc_engine::CRAFT_FONTS, chinese));
+    let base = font_definitions_with_chinese(lcc_engine::CRAFT_FONTS, chinese);
+    let size = ui_font_size(ctx);
+    ctx.set_fonts(scaled_fonts(&base, size));
+    if ctx
+        .with_plugin::<UiFontSizePlugin, _>(|plugin| {
+            plugin.base_fonts = base.clone();
+            plugin.applied = size;
+        })
+        .is_none()
+    {
+        ctx.add_plugin(UiFontSizePlugin { base_fonts: base, applied: size });
+    }
 }
 
 /// Inter remains the default UI face. Egui's default faces and craft-fonts cover other scripts;
@@ -374,6 +385,106 @@ pub const WHEEL_STRIP_SHARE: f32 = 1.0 / 3.0;
 /// Zoom per wheel point (`exp(speed × points)`): egui's 1/200 at its stock 40-point notch, rescaled so
 /// one notch still zooms the same amount now that it scrolls [`WHEEL_LINE_POINTS`].
 pub const WHEEL_ZOOM_PER_POINT: f32 = 40.0 / 200.0 / WHEEL_LINE_POINTS;
+
+/// Interface font size (Settings ▸ Interface).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UiFontSize {
+    Tiny,
+    #[default]
+    Small,
+    Medium,
+    Large,
+}
+
+impl UiFontSize {
+    pub const ALL: [UiFontSize; 4] = [UiFontSize::Tiny, UiFontSize::Small, UiFontSize::Medium, UiFontSize::Large];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            UiFontSize::Tiny => "tiny",
+            UiFontSize::Small => "small",
+            UiFontSize::Medium => "medium",
+            UiFontSize::Large => "large",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiFontSize::Tiny => "Tiny",
+            UiFontSize::Small => "Small",
+            UiFontSize::Medium => "Medium",
+            UiFontSize::Large => "Large",
+        }
+    }
+
+    pub fn scale(self) -> f32 {
+        match self {
+            UiFontSize::Tiny => 10.0 / 12.0,
+            UiFontSize::Small => 1.0,
+            UiFontSize::Medium => 14.0 / 12.0,
+            UiFontSize::Large => 16.0 / 12.0,
+        }
+    }
+}
+
+#[cfg(test)]
+fn ui_fonts_active(ctx: &egui::Context) -> bool {
+    ctx.fonts(|f| f.definitions().families.contains_key(&FontFamily::Name(FONT_SEMIBOLD.into())))
+}
+
+fn ui_fonts_id() -> egui::Id {
+    egui::Id::new("app-ui-fonts")
+}
+
+/// The UI font size `ctx` uses.
+pub fn ui_font_size(ctx: &egui::Context) -> UiFontSize {
+    ctx.data(|d| d.get_temp::<UiFontSize>(ui_fonts_id())).unwrap_or_default()
+}
+
+fn scaled_fonts(base: &FontDefinitions, size: UiFontSize) -> FontDefinitions {
+    let mut fonts = base.clone();
+    let scale = size.scale();
+    for data in fonts.font_data.values_mut() {
+        let base_scale = data.tweak.scale;
+        Arc::make_mut(data).tweak.scale = base_scale * scale;
+    }
+    fonts
+}
+
+/// Set the UI font size for `ctx`.
+///
+/// Updates [`FontData::tweak`] scales on the installed UI fonts after the current frame finishes
+/// so egui rebuilds its glyph atlas at the beginning of the next frame instead of resetting the
+/// active font collection mid-pass.
+pub fn set_ui_font_size(ctx: &egui::Context, size: UiFontSize) {
+    if ui_font_size(ctx) == size {
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp(ui_fonts_id(), size));
+    ctx.request_repaint();
+}
+
+struct UiFontSizePlugin {
+    base_fonts: FontDefinitions,
+    applied: UiFontSize,
+}
+
+impl egui::Plugin for UiFontSizePlugin {
+    fn debug_name(&self) -> &'static str {
+        "app-ui-font-size"
+    }
+
+    fn output_hook(&mut self, ctx: &egui::Context, _output: &mut egui::FullOutput) {
+        let size = ui_font_size(ctx);
+        if size == self.applied {
+            return;
+        }
+        ctx.set_fonts(scaled_fonts(&self.base_fonts, size));
+        self.applied = size;
+        ctx.request_repaint();
+    }
+}
 
 fn theme_id() -> egui::Id {
     egui::Id::new("app-theme")
@@ -703,5 +814,63 @@ mod tests {
             assert_eq!(regular.get(1..), strong.get(1..));
             assert_eq!(definitions.font_data.len(), FontDefinitions::default().font_data.len() + 2 + craft.len());
         }
+    }
+
+    #[test]
+    fn ui_font_sizes_scale_shaping_and_row_height_without_accumulating() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        apply(&ctx);
+
+        let measure = |ctx: &egui::Context, size: UiFontSize| -> (f32, f32) {
+            set_ui_font_size(ctx, size);
+            let mut measured = (0.0, 0.0);
+            for _ in 0..2 {
+                let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let ctx = ui.ctx();
+                    let t = Tokens::get(ctx);
+                    let font = t.font(12.0);
+                    let row = ctx.fonts_mut(|f| f.row_height(&font));
+                    let width = ctx.fonts_mut(|f| f.layout_no_wrap("Appearance".into(), font, Color32::WHITE).size().x);
+                    measured = (row, width);
+                });
+                frame.textures_delta.clear();
+            }
+            measured
+        };
+
+        let (tiny_row, tiny_w) = measure(&ctx, UiFontSize::Tiny);
+        let (small_row, small_w) = measure(&ctx, UiFontSize::Small);
+        let (medium_row, medium_w) = measure(&ctx, UiFontSize::Medium);
+        let (large_row, large_w) = measure(&ctx, UiFontSize::Large);
+
+        assert!(tiny_row < small_row && small_row < medium_row && medium_row < large_row);
+        assert!(tiny_w < small_w && small_w < medium_w && medium_w < large_w);
+
+        let (small_again_row, small_again_w) = measure(&ctx, UiFontSize::Small);
+        assert!((small_again_row - small_row).abs() < 1e-4);
+        assert!((small_again_w - small_w).abs() < 1e-4);
+    }
+
+    #[test]
+    fn saved_ui_font_size_survives_first_frame_install() {
+        let ctx = egui::Context::default();
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx();
+            install_fonts(ctx);
+            apply(ctx);
+            set_ui_font_size(ctx, UiFontSize::Large);
+        });
+        frame.textures_delta.clear();
+        let mut active_semibold = false;
+        let mut large_scale = 0.0;
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx();
+            active_semibold = ui_fonts_active(ctx);
+            large_scale = ctx.fonts(|f| f.definitions().font_data.get("Inter").expect("Inter font installed").tweak.scale);
+        });
+        frame.textures_delta.clear();
+        assert!(active_semibold, "custom UI fonts should remain active after first-frame size change");
+        assert!((large_scale - UiFontSize::Large.scale()).abs() < 1e-4);
     }
 }

@@ -1034,6 +1034,11 @@ fn appearance(ui: &mut egui::Ui, t: &Tokens, s: &mut crate::state::AppSettings, 
     } else {
         ui.horizontal_top(|ui| cards(ui, ((available - 12.0) / 2.0).floor()));
     }
+    ui.add_space(6.0);
+    row(ui, t, crate::i18n::tr("Font Size"), |ui| {
+        let options = crate::theme::UiFontSize::ALL.map(|size| (size, size.label()));
+        choices(ui, "settingsFontSize", &options, &mut s.ui_font_size);
+    });
     ui.add_space(2.0);
 }
 

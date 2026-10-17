@@ -1372,5 +1372,9 @@
   "Identity Plate Setup…": "身分識別設定…",
   "Remove Hot Pixels": "去除熱像素",
   "Film recipe": "底片配方",
-  "Copy recipe": "複製配方"
+  "Copy recipe": "複製配方",
+  "Tiny": "極小",
+  "Small": "小",
+  "Medium": "中",
+  "Large": "大"
 }

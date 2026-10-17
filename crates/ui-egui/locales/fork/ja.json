@@ -1373,5 +1373,9 @@
   "Identity Plate Setup…": "ID プレート設定…",
   "Remove Hot Pixels": "ホットピクセルを除去",
   "Film recipe": "フィルムレシピ",
-  "Copy recipe": "レシピをコピー"
+  "Copy recipe": "レシピをコピー",
+  "Tiny": "極小",
+  "Small": "小",
+  "Medium": "中",
+  "Large": "大"
 }

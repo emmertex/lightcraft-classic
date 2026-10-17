@@ -1128,6 +1128,7 @@ impl LccApp {
     /// Restyle `ctx` when the theme the settings select (Appearance Mode, the dark and light
     /// themes, the system's appearance in Auto) is not the one it shows. A no-op otherwise.
     pub fn sync_theme(&mut self, ctx: &egui::Context) {
+        theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         let wanted = self.ui.settings.theme(self.system_theme(ctx));
         if theme::current(ctx) != Some(wanted) {
             theme::apply_kind(ctx, wanted);
@@ -1223,6 +1224,7 @@ impl LccApp {
     }
 
     fn logic_inner(&mut self, ctx: &egui::Context) {
+        theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         if !self.styled {
             theme::install_fonts_with_chinese(ctx, self.chinese_font.as_ref());
             theme::apply(ctx);
@@ -1409,6 +1411,7 @@ impl LccApp {
 
     /// Apply settings that act outside the UI state: GPU rendering and window full screen.
     fn apply_settings(&mut self, ctx: &egui::Context) {
+        theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
             let _ = self.session.execute("app.gpu", &serde_json::json!({"enabled": self.ui.settings.gpu}));
@@ -1556,6 +1559,7 @@ impl LccApp {
 
     /// Frame timings once layout is done (`t0`: when layout started).
     fn end_frame(&mut self, ctx: &egui::Context, t0: f64) {
+        theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         self.text_focus = self.tasks.repaint.as_ref().is_some_and(|c| c.egui_wants_keyboard_input());
         ctx.output(|o| {
             for c in &o.commands {

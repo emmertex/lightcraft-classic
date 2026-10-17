@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::headless::Headless;
-use crate::state::{AppSettings, AppearanceMode, DarkTheme, LightTheme, UiState};
+use crate::state::{AppSettings, AppearanceMode, DarkTheme, LightTheme, UiFontSize, UiState};
 use crate::theme::ThemeKind;
 use crate::{LccApp, Services};
 
@@ -24,13 +24,17 @@ fn frame(app: &mut LccApp, ctx: &egui::Context) {
 #[test]
 fn new_users_keep_the_dark_look_and_old_settings_load_unchanged() {
     let s = AppSettings::default();
-    assert_eq!((s.appearance_mode, s.dark_theme, s.light_theme), (AppearanceMode::Dark, DarkTheme::Charcoal, LightTheme::Silver));
+    assert_eq!(
+        (s.appearance_mode, s.dark_theme, s.light_theme, s.ui_font_size),
+        (AppearanceMode::Dark, DarkTheme::Charcoal, LightTheme::Silver, UiFontSize::Small)
+    );
     assert_eq!(s.theme(Some(egui::Theme::Light)), ThemeKind::Charcoal, "Auto is opt-in");
     // a ui.json saved before appearance modes existed
     let old: UiState = serde_json::from_str(r#"{"settings": {"gridBadges": "always", "startupView": "detail"}}"#).unwrap();
     assert_eq!(old.settings.appearance_mode, AppearanceMode::Dark);
     assert_eq!(old.settings.dark_theme, DarkTheme::Charcoal);
     assert_eq!(old.settings.light_theme, LightTheme::Silver);
+    assert_eq!(old.settings.ui_font_size, UiFontSize::Small);
     assert_eq!(old.settings.startup_view, crate::state::StartupView::Detail);
     // and the Charcoal tokens are the ones the app always had
     assert_eq!(crate::theme::Tokens::for_kind(ThemeKind::Charcoal).chrome, crate::theme::Tokens::default().chrome);
@@ -60,16 +64,32 @@ fn choices_validate_and_survive_a_restart() {
             _ => panic!("expected a reply"),
         }
     };
-    let ok = set(&mut a, json!({"settings": {"appearanceMode": "auto", "darkTheme": "midnight", "lightTheme": "paper"}}));
+    let ok = set(&mut a, json!({"settings": {"appearanceMode": "auto", "darkTheme": "midnight", "lightTheme": "paper", "uiFontSize": "large"}}));
     assert_eq!(ok["ok"], true, "{ok}");
     assert_eq!(a.ui.settings.appearance_mode, AppearanceMode::Auto);
-    for bad in [json!({"appearanceMode": "sepia"}), json!({"darkTheme": "paper"}), json!({"lightTheme": "midnight"}), json!({"appearanceMode": 3})] {
+    assert_eq!(a.ui.settings.ui_font_size, UiFontSize::Large);
+    for bad in [
+        json!({"appearanceMode": "sepia"}),
+        json!({"darkTheme": "paper"}),
+        json!({"lightTheme": "midnight"}),
+        json!({"appearanceMode": 3}),
+        json!({"uiFontSize": "huge"}),
+    ] {
         let reply = set(&mut a, json!({ "settings": bad }));
         assert_eq!(reply["ok"], false, "{bad} accepted");
     }
-    assert_eq!((a.ui.settings.dark_theme, a.ui.settings.light_theme), (DarkTheme::Midnight, LightTheme::Paper), "a rejected value changes nothing");
+    assert_eq!(
+        (a.ui.settings.dark_theme, a.ui.settings.light_theme, a.ui.settings.ui_font_size),
+        (DarkTheme::Midnight, LightTheme::Paper, UiFontSize::Large),
+        "a rejected value changes nothing"
+    );
     let saved = serde_json::to_string(&a.ui).unwrap();
-    assert!(saved.contains(r#""appearanceMode":"auto""#) && saved.contains(r#""darkTheme":"midnight""#) && saved.contains(r#""lightTheme":"paper""#));
+    assert!(
+        saved.contains(r#""appearanceMode":"auto""#)
+            && saved.contains(r#""darkTheme":"midnight""#)
+            && saved.contains(r#""lightTheme":"paper""#)
+            && saved.contains(r#""uiFontSize":"large""#)
+    );
     let restarted: UiState = serde_json::from_str(&saved).unwrap();
     assert_eq!(restarted.settings, a.ui.settings);
 }
@@ -188,6 +208,19 @@ fn the_top_bar_button_and_settings_cards_drive_the_mode() {
     h.step();
     assert_eq!(h.app.ui.settings.appearance_mode, AppearanceMode::Dark);
     assert_eq!(crate::theme::current(&h.view.ctx), Some(ThemeKind::Charcoal));
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "button:settingsFontSize-3"}), T)["ok"], true);
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.settings.ui_font_size, UiFontSize::Large);
+    assert_eq!(crate::theme::ui_font_size(&h.view.ctx), UiFontSize::Large);
+    let scale = h.view.ctx.fonts(|f| f.definitions().font_data.get("Inter").unwrap().tweak.scale);
+    assert!((scale - UiFontSize::Large.scale()).abs() < 1e-4);
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "button:settingsFontSize-0"}), T)["ok"], true);
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.settings.ui_font_size, UiFontSize::Tiny);
+    let scale = h.view.ctx.fonts(|f| f.definitions().font_data.get("Inter").unwrap().tweak.scale);
+    assert!((scale - UiFontSize::Tiny.scale()).abs() < 1e-4);
 }
 
 #[test]

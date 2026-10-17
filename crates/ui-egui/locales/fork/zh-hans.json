@@ -1286,5 +1286,9 @@
   "Identity Plate Setup…": "身份标识设置…",
   "Remove Hot Pixels": "去除热像素",
   "Film recipe": "胶片配方",
-  "Copy recipe": "复制配方"
+  "Copy recipe": "复制配方",
+  "Tiny": "极小",
+  "Small": "小",
+  "Medium": "中",
+  "Large": "大"
 }

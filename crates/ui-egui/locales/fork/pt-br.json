@@ -1373,5 +1373,9 @@
   "Identity Plate Setup…": "Configurar placa de identidade…",
   "Remove Hot Pixels": "Remover pixels quentes",
   "Film recipe": "Receita de filme",
-  "Copy recipe": "Copiar receita"
+  "Copy recipe": "Copiar receita",
+  "Tiny": "Minúsculo",
+  "Small": "Pequeno",
+  "Medium": "Médio",
+  "Large": "Grande"
 }
