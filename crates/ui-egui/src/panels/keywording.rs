@@ -714,6 +714,13 @@ mod tests {
 
     use super::*;
 
+    /// Grouped suggestions name the keyword alone, and the whole path only where two share a name.
+    #[test]
+    fn suggestion_names_are_the_keywords_own_unless_shared() {
+        let paths = ["Places|Portugal|Lisbon", "Places|Portugal|Porto", "Trips|Porto", "beach"].map(String::from);
+        assert_eq!(suggestion_names(&paths), ["Lisbon", "Places › Portugal › Porto", "Trips › Porto", "beach"]);
+    }
+
     fn library(keywords: &[&[&str]]) -> (Catalog, Vec<PhotoId>) {
         let mut c = Catalog::new();
         let mut ids = Vec::new();

@@ -361,15 +361,27 @@ fn the_sections_fold_by_their_titles() {
 }
 
 // Given the grouped box, the suggestions say only the keyword's own name (its whole path when two
-// of them have the same name) and still give the whole keyword.
+// of them have the same name; `suggestion_names`) and still give the whole keyword. Grouped or not,
+// they sit in three equal columns (issue #222).
 #[test]
 fn grouped_suggestions_name_the_keyword_alone() {
     let (mut h, ids) = two_selected();
     ask(&mut h, "engine.execute", json!({"command": "photo.setMeta", "params": {"ids": [ids[0]], "addKeywords": ["Places|Portugal|Lisbon"]}}));
-    let whole = rect(&h, "kwSuggest:Places|Portugal|Lisbon").width();
+    let cells = |h: &Headless| -> Vec<egui::Rect> { h.app.widgets.iter().filter(|(w, _)| w.starts_with("kwSuggest:")).map(|(_, r)| *r).collect() };
+    let grid = |cells: &[egui::Rect]| {
+        assert!(cells.len() >= 2 && cells.len() <= 9, "up to nine: {}", cells.len());
+        assert!(cells.iter().all(|c| (c.width() - cells[0].width()).abs() < 0.5), "one width: {cells:?}");
+        let mut lefts: Vec<i32> = cells.iter().map(|c| c.left().round() as i32).collect();
+        lefts.sort();
+        lefts.dedup();
+        assert!(lefts.len() <= 3, "three columns: {lefts:?}");
+    };
+    grid(&cells(&h));
+    let whole = rect(&h, "kwSuggest:Places|Portugal|Lisbon");
     h.app.ui.settings.keyword_chips = crate::state::KeywordChips::Grouped;
     h.settle(SETTLE);
-    assert!(rect(&h, "kwSuggest:Places|Portugal|Lisbon").width() < whole);
+    grid(&cells(&h));
+    assert_eq!(rect(&h, "kwSuggest:Places|Portugal|Lisbon").width(), whole.width(), "the cell keeps its size");
     ask(&mut h, "ui.clickWidget", json!({"id": "kwSuggest:Places|Portugal|Lisbon"}));
     assert!(ids.iter().all(|id| keywords_of(&h, *id).iter().any(|k| k == "Places|Portugal|Lisbon")));
 }

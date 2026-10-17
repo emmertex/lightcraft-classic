@@ -945,24 +945,33 @@ pub(crate) fn keywording(app: &mut LccApp, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         // suggestions: keywords used together with the selection's keywords, else the most used
         // ones (what matches the text being typed is offered under the box itself)
-        let suggestions = (*app.caches.suggestions(&app.session.catalog, &have, "", 12)).clone();
+        // nine of them in three equal columns, like the keyword set above (issue #222)
+        let suggestions = (*app.caches.suggestions(&app.session.catalog, &have, "", 9)).clone();
         if !suggestions.is_empty() {
             ui.label(egui::RichText::new(crate::i18n::tr("Suggestions")).color(t.text_dim));
-            // grouped: the keyword's own name, its whole path in the tooltip
+            // grouped: the keyword's own name; else its path. Either is cut from the front so its own name stays,
+            // and the whole path is in the tooltip.
             let grouped = app.ui.settings.keyword_chips == crate::state::KeywordChips::Grouped;
             let names = if grouped { super::keywording::suggestion_names(&suggestions) } else { Vec::new() };
-            ui.horizontal_wrapped(|ui| {
-                if grouped {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-                }
+            let bw = ((ui.available_width() - 8.0) / 3.0).floor().max(40.0);
+            let font = t.font(11.5);
+            egui::Grid::new("kw-suggest-grid").num_columns(3).spacing([4.0, 4.0]).show(ui, |ui| {
                 for (i, k) in suggestions.into_iter().enumerate() {
                     let whole = k.replace('|', " › ");
-                    let name = names.get(i).unwrap_or(&whole);
-                    let r = ui.add(egui::Button::new(egui::RichText::new(format!("+ {name}")).color(t.text_label)).corner_radius(10.0));
-                    let r = if grouped { r.on_hover_text(&whole) } else { r };
+                    // (a grouped name shared by two keywords is the whole path again)
+                    let shown = names.get(i).filter(|n| !n.contains(" › ")).map_or(k.as_str(), String::as_str);
+                    let name = super::keywording::chip_label(shown, false, bw - 12.0, |s| {
+                        ui.painter().layout_no_wrap(s.to_string(), font.clone(), t.text_label).size().x
+                    });
+                    let r = ui
+                        .add_sized([bw, 22.0], egui::Button::new(egui::RichText::new(name).font(font.clone()).color(t.text_label)).truncate())
+                        .on_hover_text(&whole);
                     register(ui.ctx(), format!("kwSuggest:{k}"), r.rect);
                     if r.clicked() {
                         let _ = app.run("photo.setMeta", json!({"addKeywords": [k]}));
+                    }
+                    if i % 3 == 2 {
+                        ui.end_row();
                     }
                 }
             });
