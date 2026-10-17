@@ -174,3 +174,19 @@ fn save_as_a_new_set_keeps_the_original() {
     assert_eq!(names, ["Recent Keywords", "Weddings", "Ceremonies"]);
     assert_eq!(s["current"], "Ceremonies");
 }
+
+/// Issue #220: with no recent keywords yet, the set shows its nine slots empty rather than a sentence about them.
+#[test]
+fn an_empty_set_shows_nine_empty_slots() {
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1400.0, 1000.0], 1.0);
+    let id = h.app.session.visible_cloned()[0].0;
+    ask(&mut h, "ui.set", json!({"view": "photoGrid", "right": "keywords"}));
+    ask(&mut h, "engine.execute", json!({"command": "library.select", "params": {"ids": [id]}}));
+    assert_eq!(sets(&mut h)["keywords"], json!([]), "nothing added yet");
+    let empty = (1..=9).filter(|i| h.app.widgets.iter().any(|(w, _)| *w == format!("kwSetEmpty:{i}"))).count();
+    assert_eq!(empty, 9, "all nine slots, empty");
+    // a keyword added fills the first
+    ask(&mut h, "engine.execute", json!({"command": "photo.setMeta", "params": {"addKeywords": ["beach"]}}));
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "kwSet:1"));
+}

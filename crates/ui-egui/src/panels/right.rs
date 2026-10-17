@@ -999,8 +999,8 @@ fn hold_list_in_place(ui: &mut egui::Ui, top: f32) {
     ui.ctx().request_discard("the Keyword List holds its place");
 }
 
-/// The keyword set: pick a set, then nine buttons (⌥1–⌥9) that toggle its keywords on the
-/// selected photos; "Save as Set…" keeps the current nine under a name.
+/// The keyword set: pick a set, then nine buttons (⌥1–⌥9; Alt+1–Alt+9 off macOS) that toggle its keywords on
+/// the selected photos, empty slots included; "Save as Set…" keeps the current nine under a name.
 fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
     // on: every selected photo has it (⌥1–⌥9 then take it off them); partly on: only some do
     let selection = app.session.selected();
@@ -1053,17 +1053,20 @@ fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
             });
         register(ui.ctx(), "keywordSetCombo", combo.response.rect);
     });
-    let kws: Vec<String> = sets["keywords"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect();
+    let mut kws: Vec<String> = sets["keywords"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect();
+    // nothing in the set yet (no recent keywords): its nine slots show empty, as they will fill, rather
+    // than a sentence about them (issue #220); each still names its key
     if kws.is_empty() {
-        ui.label(egui::RichText::new(crate::i18n::tr("Keywords you add appear here; ⌥1–⌥9 apply them.")).color(t.text_dim));
-        return;
+        kws = vec![String::new(); 9];
     }
+    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+    let key = |i: usize| crate::menubar::shortcut_text(&format!("Alt+{}", i + 1), mac);
     let bw = ((ui.available_width() - 8.0) / 3.0).floor().max(40.0);
     egui::Grid::new("kw-set-grid").num_columns(3).spacing([4.0, 4.0]).show(ui, |ui| {
         for (i, k) in kws.iter().enumerate() {
             // an empty slot: an idle button, so the others keep their ⌥ keys
             if k.is_empty() {
-                let r = ui.add_enabled_ui(false, |ui| ui.add_sized([bw, 22.0], egui::Button::new(""))).inner;
+                let r = ui.add_enabled_ui(false, |ui| ui.add_sized([bw, 22.0], egui::Button::new(""))).inner.on_disabled_hover_text(key(i));
                 register(ui.ctx(), format!("kwSetEmpty:{}", i + 1), r.rect);
                 if i % 3 == 2 {
                     ui.end_row();
@@ -1079,7 +1082,7 @@ fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
                     [bw, 22.0],
                     egui::Button::new(egui::RichText::new(short).size(11.5).color(if on { t.text } else { t.text_label })).selected(on).truncate(),
                 )
-                .on_hover_text(format!("{} — ⌥{}", k.replace('|', " › "), i + 1));
+                .on_hover_text(format!("{} — {}", k.replace('|', " › "), key(i)));
             register(ui.ctx(), format!("kwSet:{}", i + 1), r.rect);
             if on {
                 register(ui.ctx(), format!("kwSetOn:{}", i + 1), r.rect);
