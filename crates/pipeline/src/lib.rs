@@ -56,7 +56,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
-use lcc_raster::{Histogram, Plane, Rgb32f, Rgba8, par_rows};
+use lcc_raster::{Coverage, Histogram, Plane, Rgb32f, Rgba8, par_rows};
 
 pub use tone::ToneMap;
 
@@ -221,6 +221,9 @@ pub struct Rendered {
     /// What went wrong without failing the render (e.g. a plug-in filter that isn't installed or
     /// failed and was skipped).
     pub warnings: Vec<String>,
+    /// Which pixels of `image` show the photo, when lens corrections or perspective leave a blank
+    /// border ([`geometry::Frame::coverage`]); `None` when all of them do. `histogram` leaves the rest out.
+    pub coverage: Option<Arc<Coverage>>,
 }
 
 /// Everything the per-pixel stage needs, precomputed at output resolution.
@@ -597,9 +600,10 @@ pub fn hdr_histogram(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: 
         display: None,
         ..*req
     };
-    let deep = render(src, info, s, &hreq).deep?;
+    let r = render(src, info, s, &hreq);
+    let deep = r.deep?;
     let DeepSamples::F32(v) = &deep.samples else { return None };
-    Some(Histogram::of_hdr(v.as_chunks::<3>().0, lcc_develop::Hdr::MAX_EV_LIMIT as f32))
+    Some(Histogram::of_hdr_covered(v.as_chunks::<3>().0, r.coverage.as_deref(), lcc_develop::Hdr::MAX_EV_LIMIT as f32))
 }
 
 /// Render `src` with settings `s`.
@@ -704,9 +708,10 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     if req.depth != OutputDepth::U8 {
         let deep = finish::finish_deep(&prep, s, frame, info, req.space, req.depth, req.proof, &post);
         let image = deep.to_rgba8();
-        let histogram = Histogram::of_srgb8(&image);
+        let coverage = frame.coverage(src_img.width, src_img.height, w, h).map(Arc::new);
+        let histogram = Histogram::of_srgb8_covered(&image, coverage.as_deref());
         lap("finish (deep)", &mut t);
-        return Rendered { image, histogram, deep: Some(deep), warnings };
+        return Rendered { image, histogram, deep: Some(deep), warnings, coverage };
     }
     let image = finish::finish(&prep, s, frame, info, req.space, req.display.as_ref(), req.proof, &post);
     lap("finish", &mut t);
@@ -714,9 +719,14 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         Some(k) => i.crop(k.x, k.y, k.w, k.h),
         None => i.clone(),
     };
+    // the blank border past the photo's edge is shown but isn't part of the photo (issue #211)
+    let coverage = frame.coverage(src_img.width, src_img.height, w, h).map(|c| match plan.keep {
+        Some(k) => Arc::new(c.crop(k.x, k.y, k.w, k.h)),
+        None => Arc::new(c),
+    });
     let histogram = match plan.keep {
-        Some(_) => Histogram::of_srgb8(&cut(&image)),
-        None => Histogram::of_srgb8(&image),
+        Some(_) => Histogram::of_srgb8_covered(&cut(&image), coverage.as_deref()),
+        None => Histogram::of_srgb8_covered(&image, coverage.as_deref()),
     };
     lap("histogram", &mut t);
     let mut image = image;
@@ -732,7 +742,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         }
         lap("visualize hdr", &mut t);
     }
-    Rendered { image, histogram, deep: None, warnings }
+    Rendered { image, histogram, deep: None, warnings, coverage }
 }
 
 /// The colour a colour-range mask would sample at normalized image point `p` (OkLab of the

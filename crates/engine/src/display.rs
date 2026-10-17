@@ -10,7 +10,7 @@
 pub use lcc_codecs::display::DisplayKind;
 use lcc_codecs::display::{DisplayProfile, MAX_PROFILE_BYTES};
 use lcc_pipeline::DisplaySpace;
-use lcc_raster::{Histogram, Rgba8};
+use lcc_raster::{Coverage, Histogram, Rgba8};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -92,14 +92,19 @@ pub fn present(r: &mut RenderResult, display: &Display) {
 /// its sRGB histogram, plus (`full_srgb`: for the cached view preview) its whole sRGB version.
 /// The histogram samples the same pixels [`Histogram::of_srgb8`] would, so only those are
 /// converted when the sRGB image itself isn't needed (slider drags).
-pub(crate) fn finish_render(image: &mut Rgba8, display: &Display, full_srgb: bool) -> (Option<Rgba8>, Option<Histogram>) {
+pub(crate) fn finish_render(
+    image: &mut Rgba8,
+    display: &Display,
+    full_srgb: bool,
+    coverage: Option<&Coverage>,
+) -> (Option<Rgba8>, Option<Histogram>) {
     let warn = |e: String| log::warn!("display profile: {e}");
     let (srgb, histogram) = if full_srgb {
         let srgb = display.profile.to_srgb(image).map_err(warn).ok();
-        let h = srgb.as_ref().map(Histogram::of_srgb8);
+        let h = srgb.as_ref().map(|s| Histogram::of_srgb8_covered(s, coverage));
         (srgb, h)
     } else {
-        let sample = histogram_sample(image);
+        let sample = histogram_sample(image, coverage);
         (None, display.profile.to_srgb(&sample).map_err(warn).ok().map(|s| Histogram::of_srgb8(&s)))
     };
     if let Err(e) = display.profile.correct(image) {
@@ -108,21 +113,28 @@ pub(crate) fn finish_render(image: &mut Rgba8, display: &Display, full_srgb: boo
     (srgb, histogram)
 }
 
-/// The pixels [`Histogram::of_srgb8`] reads (at most ~1 MP, a regular grid), as an image of
-/// their own (which it then reads whole).
-fn histogram_sample(img: &Rgba8) -> Rgba8 {
+/// The pixels [`Histogram::of_srgb8_covered`] reads (at most ~1 MP, a regular grid, those `coverage`
+/// says show the photo), as an image of their own (which it then reads whole).
+fn histogram_sample(img: &Rgba8, coverage: Option<&Coverage>) -> Rgba8 {
+    let coverage = coverage.filter(|c| c.width() == img.width && c.height() == img.height);
     let step = ((img.len() as f64 / 1_000_000.0).sqrt().ceil() as usize).max(1);
-    if step == 1 {
+    if step == 1 && coverage.is_none() {
         return img.clone();
     }
     let (w, h) = (img.width.div_ceil(step), img.height.div_ceil(step));
     let mut data = Vec::with_capacity(w * h);
     for y in (0..img.height).step_by(step) {
         for x in (0..img.width).step_by(step) {
-            data.push(img.get(x, y));
+            if coverage.is_none_or(|c| c.covers(x, y)) {
+                data.push(img.get(x, y));
+            }
         }
     }
-    Rgba8 { width: w, height: h, data }
+    // a pixel left out leaves the grid ragged: one row then (at most ~1 MP, so read whole)
+    match coverage {
+        Some(_) => Rgba8 { width: data.len(), height: 1, data },
+        None => Rgba8 { width: w, height: h, data },
+    }
 }
 
 #[cfg(test)]
@@ -144,11 +156,34 @@ mod tests {
         for (w, h) in [(40, 30), (1500, 1100), (2561, 1709)] {
             let img = picture(w, h);
             let (mut a, mut b) = (img.clone(), img.clone());
-            let (srgb, full) = finish_render(&mut a, &d, true);
-            let (none, sampled) = finish_render(&mut b, &d, false);
+            let (srgb, full) = finish_render(&mut a, &d, true, None);
+            let (none, sampled) = finish_render(&mut b, &d, false, None);
             assert!(srgb.is_some() && none.is_none());
             assert_eq!(full.unwrap(), sampled.unwrap(), "{w}x{h}");
             assert_eq!(a, b);
+        }
+    }
+
+    /// Issue #211 with a display profile: both histograms leave the blank border out, and agree.
+    #[test]
+    fn display_histograms_leave_the_blank_border_out() {
+        let d = p3();
+        for (w, h) in [(40, 30), (1500, 1100), (2561, 1709)] {
+            let img = picture(w, h);
+            let row = Coverage::row_words(w);
+            let mut words = vec![0u32; row * h];
+            for y in 0..h {
+                for x in 0..w * 2 / 3 {
+                    words[y * row + x / 32] |= 1 << (x % 32);
+                }
+            }
+            let cov = Coverage::from_words(w, h, words).unwrap();
+            let (mut a, mut b) = (img.clone(), img.clone());
+            let full = finish_render(&mut a, &d, true, Some(&cov)).1.unwrap();
+            let sampled = finish_render(&mut b, &d, false, Some(&cov)).1.unwrap();
+            let all = finish_render(&mut img.clone(), &d, true, None).1.unwrap();
+            assert!(full.total < all.total, "{w}x{h}: the border is left out");
+            assert_eq!(full, sampled, "{w}x{h}");
         }
     }
 

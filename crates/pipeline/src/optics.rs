@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use lcc_color::perceptual::{oklab_from_2020, oklab_to_2020};
 use lcc_develop::{DevelopSettings, EmbeddedLens, EmbeddedVignette, EmbeddedWarp, EmbeddedWarpStage};
 use lcc_geom::{Affine, Homography, Interval, Orientation, Point, Real};
-use lcc_raster::{Plane, Rgb32f};
+use lcc_raster::{Coverage, Plane, Rgb32f};
 
 use crate::for_rows;
 
@@ -277,7 +277,41 @@ impl Warp {
             None
         }
     }
+
+    /// [`covers`](Self::covers) for every pixel of a `w × h` output. Blocks of 32 × [`COVER_ROWS`] pixels whose
+    /// interval bounds place them clearly inside or outside the image are filled at once
+    /// ([`block_coverage`](Self::block_coverage)); only blocks near the image edge evaluate each pixel. Same
+    /// bits as evaluating every pixel.
+    pub fn coverage(&self, o2t: &Affine, w: usize, h: usize) -> Coverage {
+        let words = Coverage::row_words(w);
+        let mut mask = vec![0u32; words * h];
+        if words > 0 {
+            lcc_raster::par_rows(&mut mask, words * COVER_ROWS, |band, rows| {
+                let y0 = band * COVER_ROWS;
+                let y1 = y0 + rows.len() / words;
+                for word in 0..words {
+                    let (x0, x1) = (word * 32, (word * 32 + 32).min(w));
+                    let full = if x1 - x0 == 32 { u32::MAX } else { (1u32 << (x1 - x0)) - 1 };
+                    let block = self.block_coverage(o2t, x0, x1, y0, y1);
+                    for (y, row) in (y0..y1).zip(rows.chunks_exact_mut(words)) {
+                        let Some(bits) = row.get_mut(word) else { continue };
+                        *bits = match block {
+                            Some(true) => full,
+                            Some(false) => 0,
+                            None => (x0..x1).filter(|&x| self.covers(o2t, x, y)).fold(0, |b, x| b | 1 << (x - x0)),
+                        };
+                    }
+                }
+            });
+        }
+        // the length is `row_words(w) × h` by construction
+        Coverage::from_words(w, h, mask).unwrap_or_else(|| Coverage::full(w, h))
+    }
 }
+
+/// Output rows per block of [`Warp::coverage`]; a block is one mask word (32 px) wide. 16 rows measured
+/// ~20 % faster than 8 at 6000 × 4000 (fewer interval evaluations, few more edge pixels).
+const COVER_ROWS: usize = 16;
 
 /// DNG `WarpRectilinear` source position for corrected position `p` (px) and plane `ch`.
 pub fn embedded_warp(wp: &EmbeddedWarp, p: Point, ch: usize, w: f64, h: f64) -> Point {

@@ -459,10 +459,6 @@ fn warp_params(wp: &lcc_pipeline::optics::Warp, base: (usize, usize), out: (usiz
     p
 }
 
-/// Output rows per block of [`coverage_mask`]; a block is one mask word (32 px) wide. 16 rows measured
-/// ~20 % faster than 8 at 6000 × 4000 (fewer interval evaluations, few more edge pixels).
-const COVER_ROWS: usize = 16;
-
 /// The largest source (bytes on the device) a view's stages keep uploaded between renders.
 const RETAIN_SOURCE_BYTES: usize = 96 << 20;
 
@@ -509,38 +505,6 @@ pub(crate) fn source_uploads() -> u64 {
     SOURCE_UPLOADS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The reference framing decision ([`Warp::covers`](lcc_pipeline::optics::Warp::covers)) for every
-/// output pixel, one bit per pixel, rows padded to 32-bit words. Blocks of 32 × [`COVER_ROWS`] pixels whose
-/// interval bounds place them clearly inside or outside the image are filled at once
-/// ([`Warp::block_coverage`](lcc_pipeline::optics::Warp::block_coverage), the same formulas evaluated
-/// with outward-rounded intervals); only blocks near the image edge evaluate each pixel. Same bits as
-/// evaluating every pixel.
-fn coverage_mask(wp: &lcc_pipeline::optics::Warp, o2t: &lcc_geom::Affine, w: usize, h: usize) -> Vec<u32> {
-    let words = w.div_ceil(32);
-    let mut coverage = vec![0u32; words * h];
-    if words == 0 {
-        return coverage;
-    }
-    lcc_raster::par_rows(&mut coverage, words * COVER_ROWS, |band, rows| {
-        let y0 = band * COVER_ROWS;
-        let y1 = y0 + rows.len() / words;
-        for word in 0..words {
-            let (x0, x1) = (word * 32, (word * 32 + 32).min(w));
-            let full = if x1 - x0 == 32 { u32::MAX } else { (1u32 << (x1 - x0)) - 1 };
-            let block = wp.block_coverage(o2t, x0, x1, y0, y1);
-            for (y, row) in (y0..y1).zip(rows.chunks_exact_mut(words)) {
-                let Some(bits) = row.get_mut(word) else { continue };
-                *bits = match block {
-                    Some(true) => full,
-                    Some(false) => 0,
-                    None => (x0..x1).filter(|&x| wp.covers(o2t, x, y)).fold(0, |b, x| b | 1 << (x - x0)),
-                };
-            }
-        }
-    });
-    coverage
-}
-
 /// Resample the source into the output frame (`Frame::sample`). May return the source buffer
 /// itself when the frame is the identity.
 fn sample(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, src_buf: Arc<Buf>, plan: &Plan<'_>) -> Arc<Buf> {
@@ -577,7 +541,7 @@ fn sample(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, src_buf: Arc<Buf>, plan: &Plan<'_>
             let p = warp_params(wp, (bw, bh), (w, h), o2t, sp.sx, sp.sy);
             // f32 rounding can cross a source edge. Keep the reference f64
             // framing decision in a bit mask; color sampling stays on the GPU.
-            let coverage = cx.gpu.upload(&coverage_mask(wp, o2t, w, h));
+            let coverage = cx.gpu.upload(wp.coverage(o2t, w, h).words());
             cx.run("sample_warp", &p, &[Some(&base), Some(&out), Some(&coverage)], groups2(w, h, [16, 16]));
             Arc::new(out)
         }
@@ -794,14 +758,19 @@ pub fn render(
         fail(FailKind::Fatal, format!("the GPU returned an incomplete image ({unwritten} of {n} pixels unwritten)"));
         return None;
     }
+    // the blank border past the photo's edge is shown but isn't part of the photo (issue #211)
+    let coverage = plan.frame.coverage(src.width, src.height, w, h).map(|c| match plan.keep {
+        Some(k) => Arc::new(c.crop(k.x, k.y, k.w, k.h)),
+        None => Arc::new(c),
+    });
     let histogram = match plan.keep {
-        Some(k) => Histogram::of_srgb8(&image.crop(k.x, k.y, k.w, k.h)),
-        None => Histogram::of_srgb8(&image),
+        Some(k) => Histogram::of_srgb8_covered(&image.crop(k.x, k.y, k.w, k.h), coverage.as_deref()),
+        None => Histogram::of_srgb8_covered(&image, coverage.as_deref()),
     };
     lap("histogram", &mut t, &mut cx);
     // An entirely black result (upstream work that did not run would give that too): redo it on
     // the CPU, which costs time only for the rare photo that really is black.
-    if n >= 4096 && [&histogram.r, &histogram.g, &histogram.b].iter().all(|c| c.first() == Some(&histogram.total)) {
+    if n >= 4096 && histogram.total > 0 && [&histogram.r, &histogram.g, &histogram.b].iter().all(|c| c.first() == Some(&histogram.total)) {
         fail(FailKind::Blank, "the GPU result is entirely black; rendering it on the CPU to be sure".into());
         return None;
     }
@@ -820,7 +789,7 @@ pub fn render(
     if let Some(k) = plan.keep {
         image = image.crop(k.x, k.y, k.w, k.h);
     }
-    Some(Rendered { image, histogram, deep: None, warnings: Vec::new() })
+    Some(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage })
 }
 
 /// Pixels whose alpha is not 255 (cheap: no early exit, so it vectorizes).
@@ -1157,7 +1126,8 @@ mod tests {
             // widths that do and don't fill the last word; heights that do and don't fill the last band
             for (w, h) in [f.fit(700, 700), (333, 221), (64, 16), (1, 1)] {
                 let o2t = f.out_to_oriented(w, h);
-                let mask = coverage_mask(wp, &o2t, w, h);
+                let cov = wp.coverage(&o2t, w, h);
+                let mask = cov.words();
                 let words = w.div_ceil(32);
                 assert_eq!(mask.len(), words * h);
                 for y in 0..h {
@@ -1188,7 +1158,8 @@ mod tests {
         assert_eq!(wp.block_coverage(&o2t, 0, 32, 64, 80), None, "the block holding the horizon");
         assert_eq!(wp.block_coverage(&o2t, 0, 32, 0, 16), Some(false), "beyond the horizon");
         assert_eq!(wp.block_coverage(&o2t, 448, 480, 288, 304), Some(true), "the centre");
-        let mask = coverage_mask(&wp, &o2t, w, h);
+        let cov = wp.coverage(&o2t, w, h);
+        let mask = cov.words();
         let words = w.div_ceil(32);
         let mut covered = 0;
         for y in 0..h {

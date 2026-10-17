@@ -8,7 +8,7 @@
 use lcc_develop::{DevelopSettings, EmbeddedLens};
 use lcc_geom::{Affine, CropGeometry, Homography, Orientation, Point, Rect};
 use lcc_raster::resample::{Filter, resize};
-use lcc_raster::{Rgb32f, par_rows};
+use lcc_raster::{Coverage, Rgb32f, par_rows};
 
 use crate::optics::{Warp, reorient_lens};
 
@@ -244,6 +244,16 @@ impl Frame {
             SampleMode::Affine(Affine::scale(sx, sy) * self.out_to_oriented(w, h))
         };
         SamplePlan { ow, oh, prefilter, sx, sy, mode }
+    }
+
+    /// Which pixels of a `w × h` output of a `src_w × src_h` source [`Self::sample`] fills from the photo,
+    /// when some fall past its edge (lens corrections, perspective) and get [`BLANK`]. `None` when every
+    /// pixel shows the photo.
+    pub fn coverage(&self, src_w: usize, src_h: usize, w: usize, h: usize) -> Option<Coverage> {
+        let (SampleMode::Warp(o2t), Some(warp)) = (self.sample_plan(src_w, src_h, w, h).mode, self.warp.as_ref()) else {
+            return None;
+        };
+        Some(warp.coverage(&o2t, w, h)).filter(|c| !c.is_full())
     }
 
     /// Sample the source into a `w × h` output buffer: orientation, crop, rotation, flips — one

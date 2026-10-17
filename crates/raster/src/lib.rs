@@ -11,11 +11,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod blur;
+pub mod coverage;
 pub mod histogram;
 pub mod morph;
 pub mod resample;
 pub mod sample;
 
+pub use coverage::Coverage;
 pub use histogram::{Channel, Clipped, Clipping, HdrBins, Histogram, HistogramMode, HistogramScale, robust_peak, scope_cell, scope_rgb, scope_uv};
 
 /// Run `f` over row chunks, in parallel when the `parallel` feature is on.

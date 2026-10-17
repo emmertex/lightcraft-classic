@@ -108,6 +108,34 @@ fn constrain_crop_removes_blank_areas() {
     assert!(blank_fraction(&c) < 0.002, "constrained: {}", blank_fraction(&c));
 }
 
+/// Issue #211: the blank border a transform leaves is shown, but the histogram counts only the photo,
+/// at every output size. A white photo stays white data.
+#[test]
+fn histogram_leaves_the_blank_border_out() {
+    let src = Rgb32f::from_fn(300, 200, |x, y| [0.05 + 0.002 * x as f32, 0.1 + 0.002 * y as f32, 0.3]);
+    let mut s = DevelopSettings::default();
+    let plain = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(300, 300));
+    assert!(plain.coverage.is_none(), "no transform: every pixel is the photo");
+    assert_eq!(plain.histogram.total as usize, plain.image.len());
+    s.geometry.vertical = -60.0;
+    s.geometry.rotate = 4.0;
+    for edge in [120, 300, 640] {
+        let r = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(edge, edge));
+        let blank = blank_fraction(&r.image);
+        assert!(blank > 0.03, "{edge}: the keystone leaves blank corners ({blank})");
+        let cov = r.coverage.as_deref().expect("a blank border");
+        assert_eq!((cov.width(), cov.height()), (r.image.width, r.image.height));
+        let counted = r.histogram.total as f64 / r.image.len() as f64;
+        assert!((counted - (1.0 - blank)).abs() < 0.02, "{edge}: counted {counted}, blank {blank}");
+    }
+    let white = Rgb32f::filled(300, 200, [4.0; 3]);
+    let r = render(&white, &SourceInfo::default(), &s, &RenderRequest::fit(300, 300));
+    assert!((r.histogram.total as usize) < r.image.len(), "the border is left out");
+    assert_eq!(r.histogram.luma[255], r.histogram.total, "and the photo's white is all there");
+    let hdr = render(&src, &SourceInfo::default(), &s, &RenderRequest { depth: crate::OutputDepth::F32Hdr, ..RenderRequest::fit(300, 300) });
+    assert!(hdr.coverage.is_some() && (hdr.histogram.total as usize) < hdr.image.len(), "high-bit-depth renders too");
+}
+
 #[test]
 fn transforms_preview_matches_export() {
     let src = lcc_scenes::demo_library()[4].render(960, 640);

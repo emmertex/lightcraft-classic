@@ -11,7 +11,7 @@
 
 use serde::Serialize;
 
-use crate::Rgba8;
+use crate::{Coverage, Rgba8};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Histogram {
@@ -394,11 +394,23 @@ impl Histogram {
     /// Histogram of linear RGB samples (1 = SDR white) reaching `stops` stops above SDR white.
     /// `samples` are visited at most ~1 MP of them (evenly strided).
     pub fn of_hdr(samples: &[[f32; 3]], stops: f32) -> Histogram {
+        Self::of_hdr_covered(samples, None, stops)
+    }
+
+    /// [`Self::of_hdr`] of only the samples `coverage` says show the photo, `samples` being its image row
+    /// by row (all of them for `None`, or a mask that doesn't match `samples`).
+    pub fn of_hdr_covered(samples: &[[f32; 3]], coverage: Option<&Coverage>, stops: f32) -> Histogram {
+        let coverage = coverage.filter(|c| c.width().checked_mul(c.height()) == Some(samples.len()));
         let bins = HdrBins { from: Self::HDR_FROM, stops };
         let mut h = Self::empty(Some(bins));
         let scale = saturation_table();
         let step = (samples.len() / 1_000_000).max(1);
-        for c in samples.iter().step_by(step) {
+        for (i, c) in samples.iter().enumerate().step_by(step) {
+            if let Some(m) = coverage
+                && !m.covers(i % m.width().max(1), i / m.width().max(1))
+            {
+                continue;
+            }
             let (r, g, b) = (c[0], c[1], c[2]);
             // the same display encoding the SDR histogram bins by, so chroma and the vectorscope
             // mean one thing
@@ -497,12 +509,22 @@ impl Histogram {
     }
 
     pub fn of_srgb8(img: &Rgba8) -> Histogram {
+        Self::of_srgb8_covered(img, None)
+    }
+
+    /// [`Self::of_srgb8`] of only the pixels `coverage` says show the photo (all of them for `None`, or a
+    /// mask of another size): the blank border lens corrections leave is not part of the photo (issue #211).
+    pub fn of_srgb8_covered(img: &Rgba8, coverage: Option<&Coverage>) -> Histogram {
+        let coverage = coverage.filter(|c| c.width() == img.width && c.height() == img.height);
         let mut h = Self::empty(None);
         let scale = saturation_table();
         // Sample at most ~1 MP for speed.
         let step = ((img.len() as f64 / 1_000_000.0).sqrt().ceil() as usize).max(1);
         for y in (0..img.height).step_by(step) {
             for x in (0..img.width).step_by(step) {
+                if coverage.is_some_and(|c| !c.covers(x, y)) {
+                    continue;
+                }
                 let p = img.get(x, y);
                 bump(&mut h.r, p[0] as usize);
                 bump(&mut h.g, p[1] as usize);
@@ -573,6 +595,56 @@ mod tests {
         assert_eq!(h.percentile(0.25), 0.0);
         assert_eq!(h.percentile(0.75), 1.0);
         assert_eq!(h.above_sdr(), 0.0);
+    }
+
+    /// A mask with pixel `(x, y)` set when `f(x, y)`.
+    fn coverage(w: usize, h: usize, f: impl Fn(usize, usize) -> bool) -> Coverage {
+        let row = Coverage::row_words(w);
+        let mut words = vec![0u32; row * h];
+        for y in 0..h {
+            for x in 0..w {
+                if f(x, y) {
+                    words[y * row + x / 32] |= 1 << (x % 32);
+                }
+            }
+        }
+        Coverage::from_words(w, h, words).unwrap()
+    }
+
+    /// Issue #211: the blank border a lens correction leaves (here the light grey right third) is left
+    /// out, while white pixels of the photo itself still count.
+    #[test]
+    fn uncovered_pixels_are_left_out() {
+        let blank = [194, 194, 194, 255];
+        let img = Rgba8::from_fn(30, 10, |x, _| {
+            if x >= 20 {
+                blank
+            } else if x < 10 {
+                [255, 255, 255, 255]
+            } else {
+                [0, 0, 0, 255]
+            }
+        });
+        let all = Histogram::of_srgb8(&img);
+        assert_eq!((all.total, all.luma[194]), (300, 100));
+        let cov = coverage(30, 10, |x, _| x < 20);
+        let h = Histogram::of_srgb8_covered(&img, Some(&cov));
+        assert_eq!(h.total, 200);
+        assert_eq!(h.luma[194], 0, "no blank border in the histogram");
+        assert_eq!((h.luma[255], h.luma[0]), (100, 100), "the photo's own white is kept");
+        // a mask of another size is no information: every pixel counts
+        assert_eq!(Histogram::of_srgb8_covered(&img, Some(&coverage(29, 10, |_, _| false))), all);
+        assert_eq!(Histogram::of_srgb8_covered(&img, Some(&coverage(30, 10, |_, _| false))).total, 0);
+    }
+
+    #[test]
+    fn uncovered_hdr_samples_are_left_out() {
+        let samples: Vec<[f32; 3]> = (0..12).map(|i| if i % 4 == 3 { [0.55; 3] } else { [4.0; 3] }).collect();
+        let cov = coverage(4, 3, |x, _| x != 3);
+        let h = Histogram::of_hdr_covered(&samples, Some(&cov), 4.0);
+        assert_eq!(h.total, 9);
+        assert_eq!(h.above_sdr(), 1.0, "only the photo's HDR samples remain");
+        assert_eq!(Histogram::of_hdr_covered(&samples, Some(&coverage(5, 3, |_, _| false)), 4.0).total, 12, "a mismatched mask counts everything");
     }
 
     /// The chroma channel bins HSV saturation of the display-encoded pixels: neutrals in bin 0,

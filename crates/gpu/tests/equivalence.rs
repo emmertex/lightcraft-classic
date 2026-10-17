@@ -645,6 +645,25 @@ fn embedded_lens_perspective_edges_match() {
     check("embedded lens rotated", &src, &info, &s, &RenderRequest::fit(700, 700));
 }
 
+/// Issue #211: both renderers leave the same blank border out of the histogram.
+#[test]
+fn histograms_leave_out_the_same_blank_border() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(2, 900, 600);
+    let mut s = DevelopSettings::default();
+    s.geometry.vertical = -40.0;
+    s.geometry.rotate = 3.0;
+    let req = RenderRequest::fit(700, 700);
+    let cpu = render(&src, &SourceInfo::default(), &s, &req);
+    let gpu = lcc_gpu::render(&src, &SourceInfo::default(), &s, &req, None).expect("gpu render");
+    let cov = cpu.coverage.as_deref().expect("a blank border");
+    assert_eq!(gpu.coverage.as_deref(), Some(cov), "the same pixels show the photo");
+    assert_eq!(gpu.histogram.total, cpu.histogram.total);
+    assert!((cpu.histogram.total as usize) < cpu.image.len());
+}
+
 #[test]
 fn cached_renders_match_uncached() {
     if !gpu() {

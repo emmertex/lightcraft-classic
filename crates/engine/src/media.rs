@@ -1036,7 +1036,7 @@ impl RenderJob {
                 photo: self.photo,
                 level: self.level,
                 key: self.key,
-                rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new() }),
+                rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage: None }),
                 gpu_fallback: None,
                 loaded: None,
                 quick: None,
@@ -1056,7 +1056,7 @@ impl RenderJob {
                 photo: self.photo,
                 level: self.level,
                 key: self.key,
-                rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new() }),
+                rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage: None }),
                 gpu_fallback: None,
                 loaded: None,
                 quick: None,
@@ -1086,7 +1086,7 @@ impl RenderJob {
                 let display = match (&self.display, self.request.display) {
                     (Some(d), Some(_)) => {
                         let keep = self.view_cache.is_some() && self.request.quality == Quality::Full;
-                        let (s, h) = crate::display::finish_render(&mut rendered.image, d, keep);
+                        let (s, h) = crate::display::finish_render(&mut rendered.image, d, keep, rendered.coverage.as_deref());
                         // (an HDR edit's HDR histogram stays)
                         if let Some(h) = h.filter(|_| rendered.histogram.hdr.is_none()) {
                             rendered.histogram = h;
@@ -1244,7 +1244,7 @@ impl QuickJob {
         };
         let rendered = |image: Rgba8| {
             let histogram = Histogram::of_srgb8(&image);
-            Ok(Rendered { image, histogram, deep: None, warnings: Vec::new() })
+            Ok(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage: None })
         };
         for (cache, k) in &self.cached {
             if let Some(img) = cache.get(*k) {
