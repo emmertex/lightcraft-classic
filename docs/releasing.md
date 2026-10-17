@@ -21,8 +21,9 @@ How a real run flows:
    `sha256sum` output as a tiny `sums-<platform>` artifact. Flatpak fetches the Linux tarball from the draft.
    Files never round-trip through Actions artifacts, which are very slow from the self-hosted runners.
 3. **release** (after every platform, whether it built or not) writes `SHA256SUMS.txt` for the files on the
-   draft from those checksum artifacts, names failed platforms in the notes and the run summary, and uploads
-   `SHA256SUMS.txt` and `latest.json`. The release stays a **draft**; publishing is a separate manual step.
+   draft from those checksum artifacts, signs it (`SHA256SUMS.txt.sig`, see [Update signing key](#update-signing-key)),
+   names failed platforms in the notes and the run summary, and uploads `SHA256SUMS.txt`, its signature and
+   `latest.json`. The release stays a **draft**; publishing is a separate manual step.
 
 ## Prepare and start a release
 
@@ -37,7 +38,9 @@ How a real run flows:
 3. Push to `release`, or dispatch the workflow on `release` (a dispatch on another branch is a dry run; see below).
 4. Check the workflow run. On success, the workflow creates or updates a **draft**
    GitHub Release named `<app> v<version>`, targeted at the commit that triggered the run.
-   Review the draft and its `SHA256SUMS.txt`, then publish it in GitHub Releases when ready.
+   Review the draft and its `SHA256SUMS.txt`, then publish it in GitHub Releases when ready. The job log's
+   *Sign the checksums* step says `SHA256SUMS.txt.sig verified`; if it warns that the list is not signed,
+   the app will not install this release by itself (see [Update signing key](#update-signing-key)).
 
 The workflow replaces assets when it updates an existing draft (the version job clears them first). It stops rather than overwriting a
 release that has already been published, so bump the version before producing another release.
@@ -58,6 +61,11 @@ platform jobs computed, so only what is actually attached to the release is offe
 replaced on every run of the draft. Nothing else has to be maintained by hand: a new platform is offered as
 soon as its artifact name carries the OS and architecture slugs the pipeline already uses
 (`<binary>-<version>-<os>-<arch>…`).
+
+The feed says *what* is newer; it does not decide what gets installed. Its `sha256` fields and GitHub's
+`digest` come from the same place as the files, so the app checks every download against the release's
+`SHA256SUMS.txt` instead, and only once that list carries a valid signature from the key pinned in
+`brand.toml` ([Update signing key](#update-signing-key)).
 
 Prerelease tags get a manifest too (with `prerelease: true`): the app only offers one when
 "Include prereleases" is ticked, so a release candidate never reaches someone on a stable build.
@@ -141,6 +149,98 @@ signing identity is signed but not notarized. Configure only the platform creden
   Trusted Signing credentials: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
   `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT`, and `AZURE_CERT_PROFILE`.
 
+- **Update signing:** `UPDATE_SIGNING_KEY`, the private key the in-app updater's checksum list is signed
+  with (next section). Without it the release builds, warns, and the app links to it instead of installing it.
+
 Linux and web artifacts are not code-signed by this workflow. Each platform job computes the SHA-256
 of its own files; the release job gathers them into `SHA256SUMS.txt` for every file on the draft and
 attaches it.
+
+## Update signing key
+
+The in-app updater installs a release only when its `SHA256SUMS.txt` carries a valid ed25519 signature
+(`SHA256SUMS.txt.sig`, base64, over the file's exact bytes) from a public key pinned in `brand.toml`
+(`[updates] public_keys`), and the downloaded file matches the SHA-256 that signed list records. Anyone who
+can change a release's files can also change its checksums; they cannot sign them. The file must also
+carry the offered version in its name (`<binary>-<version>-<os>-<arch>…`, as packaging names every
+artifact), so an older release's signed list and file, served under a newer tag, don't install as it:
+keep that naming. A missing list or signature, a signature by another key, a list that doesn't name the
+file, a file named for another version, or a file that doesn't match means no install, with a sentence
+saying why; the release page link still works. A build whose
+`brand.toml` has no key (a fork that hasn't made one, a dev build) checks for updates and links to the
+release, but never downloads or installs one.
+
+The release job signs with `cargo xtask update-key sign` (`.github/scripts/sign-checksums.sh`, after the
+*Checksums* step) and then checks the signature against `brand.toml` with `cargo xtask update-key verify`,
+before anything is uploaded: a secret that doesn't match a pinned key fails the job. Without the secret it
+warns and uploads no `.sig`.
+
+The tool is built in a step of its own, *Build the signing tool (no secrets)*, with `UPDATE_SIGNING_KEY`
+and `GH_TOKEN` unset and into fresh folders under `$RUNNER_TEMP` (its own `CARGO_HOME` and target folder,
+no compiler cache); the job's checkout keeps no token in `.git/config` (`persist-credentials: false`). The
+signing step then runs that built program and compiles nothing. So the code a build runs (build scripts,
+proc-macros) never runs while the key is in the environment, and no shared build cache goes into the
+tool. That is all it protects against: see *Runner trust*. Run by hand, the script builds the tool with
+`cargo xtask` as usual.
+
+### Runner trust
+
+The signing key is only as safe as the runner that holds it. The release job runs on the self-hosted
+runner, which also builds other people's pull requests as the same user. Such a job can still reach the
+signing step through:
+
+- a `.cargo/config.toml` in any parent folder of the checkout (including `~/.cargo/config.toml` when the
+  runner's work folder is under `$HOME`): a fresh `CARGO_HOME` doesn't stop cargo reading parent folders;
+- the shared toolchain: `~/.rustup` and `~/.cargo/bin/cargo`.
+
+The stronger option is to run the `release` job on a GitHub-hosted runner: it needs only `gh`, `jq` and
+an xtask build, none of the self-hosted runner's tools. That is the maintainer's decision; until then,
+treat anyone who can run code on that runner as able to reach the key.
+
+### Create the key pair (once)
+
+1. On your own machine: `cargo xtask update-key new --out <a file outside the repository>`. It refuses a
+   path inside the repository and an existing file, and creates the file readable by you only. Keep that
+   file somewhere safe (a password manager): a lost key is handled like a leaked one (see *Rotate the
+   key*), and costs every installed build one update by hand.
+2. Paste the file's whole contents (one line, `update-signing-secret:…`) into a new secret,
+   `UPDATE_SIGNING_KEY`, in the `release` environment (Settings ▸ Environments ▸ release ▸ Add secret).
+3. Put the **public** key the command printed into `brand.toml` and commit it:
+   ```toml
+   [updates]
+   public_keys = ["<the printed key>"]
+   ```
+   Never put the private key there: `update-key verify` and the updater's tests refuse it. Builds from that
+   commit on check signatures; earlier builds install the way they always did.
+
+### Check a draft release
+
+The *Sign the checksums* step of the release job logs `SHA256SUMS.txt.sig verified`. To check by hand,
+download `SHA256SUMS.txt`, `SHA256SUMS.txt.sig` and one or more installers from the draft into an empty
+folder and run `cargo xtask update-key verify <folder>`: it checks the signature against the `brand.toml`
+of the commit you have checked out (check out the release's tag or commit first, so that is the key the
+release's builds carry) and every listed file present in the folder against its SHA-256.
+
+### Rotate the key
+
+An installed app trusts only the keys it was built with, so a key change ships in a release signed with
+the old key:
+
+1. `cargo xtask update-key new --out <new file outside the repository>`.
+2. Add the new public key to `brand.toml` beside the old one, `public_keys = ["<new>", "<old>"]`, and keep
+   the **old** private key in `UPDATE_SIGNING_KEY`. Release as usual: this release is signed with the old
+   key (which every installed build trusts) and carries the new one.
+3. Once that release is out, and users have had time to take it, replace `UPDATE_SIGNING_KEY` with the new
+   private key, and remove the old public key from `brand.toml`. Releases from then on are signed with the
+   new key.
+
+A build from before step 2 trusts only the old key: if it skips every release signed with the old key, it
+can't install the first one signed with the new key, and its user updates once by hand from the release
+page (the dialog says why). So keep signing with the old key for a few releases before
+step 3.
+
+**A leaked or lost key** can't go through step 2: a leaked one must not sign again, and a lost one can't.
+Make a new key at once (step 1), put only the new public key in `brand.toml`
+(`public_keys = ["<new>"]`) and the new private key in `UPDATE_SIGNING_KEY`, and release. Builds from
+before then can't verify that release: each updates once by hand from the release page (the dialog says
+so and links to it), and installs automatically again from there. Say so in the release notes.

@@ -50,8 +50,9 @@ image = { workspace = true }
 lcc-testkit = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
 lcc-denoise = { workspace = true, features = ["runtime"] }
-# the model-setup tests run denoise models; only the app/CLI enable this in builds
-lcc-engine = { workspace = true, features = ["denoise"] }
+# the model-setup tests run denoise models; only the app/CLI enable this in builds. test-support: the
+# update tests stand in a throwaway update key for the brand's
+lcc-engine = { workspace = true, features = ["denoise", "test-support"] }
 lcc-codecs = { workspace = true }
 lcc-faces = { workspace = true }
 lcc-merge = { workspace = true }

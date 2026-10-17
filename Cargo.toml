@@ -74,6 +74,10 @@ lcc-testkit = { path = "crates/testkit" }
 # foundation
 thiserror = "2"
 sha2 = "0.10"
+# update signatures (crates/updater, xtask update-key): the 2.x the TLS stack already builds, no `fast`
+# tables, so no second copy and no new feature
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+base64 = "0.22"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"

@@ -84,7 +84,9 @@ pub struct Update {
     pub tag: String,
     /// The asset to download.
     pub asset: Asset,
-    /// SHA-256 to check the download against, when the release publishes one.
+    /// The SHA-256 the feed states for the file, when it states one. Informational only: it comes
+    /// from the same place as the file, so [`crate::download`] checks against the release's
+    /// signed `SHA256SUMS.txt` instead.
     pub sha256: Option<String>,
     /// `YYYY-MM-DD`, when the feed says.
     pub published: Option<String>,
@@ -123,7 +125,7 @@ pub fn check(opts: &Options, feed: Option<&str>, cancel: Option<Arc<AtomicBool>>
 }
 
 /// [`check`] for a release already parsed (a test, or a caller that cached the parse).
-pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Option<Arc<AtomicBool>>) -> Result<Option<Update>, UpdateError> {
+pub fn from_release(opts: &Options, target: Target, release: Release, _cancel: Option<Arc<AtomicBool>>) -> Result<Option<Update>, UpdateError> {
     if release.version <= opts.current {
         return Ok(None);
     }
@@ -143,14 +145,9 @@ pub fn from_release(opts: &Options, target: Target, release: Release, cancel: Op
     let Some(asset) = release.best_asset(&target).cloned() else {
         return Err(UpdateError::NoAssetFor { version: release.version.to_text(), target: format!("{}-{}", target.os.slug(), target.arch) });
     };
-    // the release's own checksum list, when it is not already in the feed entry
-    let sha256 = match &asset.sha256 {
-        Some(sha) => Some(sha.clone()),
-        None => match release.checksum_asset() {
-            Some(sums) => fetch_checksum(&sums.url, &asset.name, cancel)?,
-            None => None,
-        },
-    };
+    // what the feed says the file hashes to: shown, never trusted. The download is checked against
+    // the release's signed checksum list instead (crate::signature), fetched when it starts
+    let sha256 = asset.sha256.clone();
     Ok(Some(Update {
         current: opts.current.clone(),
         version: release.version.clone(),
@@ -265,36 +262,33 @@ fn client() -> Result<Client, UpdateError> {
 
 /// GET a small text body.
 fn get_text(url: &str, cancel: Option<Arc<AtomicBool>>) -> Result<String, UpdateError> {
+    get_bytes(url, cancel).map(|body| String::from_utf8_lossy(&body).into_owned())
+}
+
+/// GET a small body as it was sent (a signature covers the exact bytes).
+pub(crate) fn get_bytes(url: &str, cancel: Option<Arc<AtomicBool>>) -> Result<Vec<u8>, UpdateError> {
     let client = client()?;
     let mut req = client.get(url).header("Accept", "application/vnd.github+json, application/json");
     if let Some(flag) = cancel {
         req = req.cancel(flag);
     }
-    let resp = req.send()?;
+    let net = |e: lcc_net::NetError| match e {
+        lcc_net::NetError::Cancelled => UpdateError::Cancelled,
+        e => e.into(),
+    };
+    let resp = req.send().map_err(net)?;
     let status = resp.status;
-    let body = resp.text()?;
+    let body = resp.bytes().map_err(net)?;
     if status == 403 || status == 429 {
         // never the body: it can be a whole HTML page
-        let what = if body.contains("rate limit") { "GitHub's rate limit was reached; try again later" } else { "the feed refused the request" };
+        let rate_limited = body.windows(10).any(|w| w == b"rate limit");
+        let what = if rate_limited { "GitHub's rate limit was reached; try again later" } else { "the feed refused the request" };
         return Err(UpdateError::Http { code: status, what: what.to_string() });
     }
     if !(200..300).contains(&status) {
         return Err(UpdateError::Http { code: status, what: "the release feed was not found".into() });
     }
     Ok(body)
-}
-
-/// The release's checksum list: the SHA-256 for `file`, when it lists it.
-fn fetch_checksum(url: &str, file: &str, cancel: Option<Arc<AtomicBool>>) -> Result<Option<String>, UpdateError> {
-    // a checksum that cannot be fetched is not a failure: the download is still TLS-verified and
-    // size-checked, and saying "no update" because of a missing sums file would be worse
-    match get_text(url, cancel) {
-        Ok(body) => Ok(crate::checksum::lookup(&body, file)),
-        Err(e) => {
-            log::debug!("update: checksum list: {e}");
-            Ok(None)
-        }
-    }
 }
 
 /// The result of one check, for the UI and `update.status`.
@@ -460,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn a_checksums_asset_pins_the_download() {
+    fn a_checksums_asset_is_not_read_by_the_check() {
         let body = serde_json::json!([{
             "tag_name": "v1.2.0",
             "assets": [
@@ -469,8 +463,8 @@ mod tests {
             ],
         }])
         .to_string();
-        // the sums file is unreachable here (a test origin, so http is allowed): the update still
-        // comes back, without a hash
+        // the sums file is unreachable here (a test origin, so http is allowed): the check does not
+        // read it (the download reads the signed list), so the update comes back without a hash
         let o = Options { extra_origin: Some("http://127.0.0.1:1".into()), ..opts() };
         let u = run(&o, &body).expect("a check").expect("an update");
         assert_eq!(u.sha256, None);
@@ -592,7 +586,7 @@ mod tests {
             let u = run(&o, &release_0_8_1()).expect("a check").expect("an update");
             assert_eq!(u.asset.name, file, "{os:?} {arch}");
             assert!(u.asset.url.ends_with(&format!("/releases/download/v0.8.1/{file}")), "{}", u.asset.url);
-            assert_eq!(u.sha256.as_deref().map(str::len), Some(64), "the feed's own hash pins the download");
+            assert_eq!(u.sha256.as_deref().map(str::len), Some(64), "the feed's own hash is reported (and not trusted)");
         }
         let bsd = Options { target: Some(Target { os: Os::Freebsd, arch: "x86_64" }), ..older };
         assert!(matches!(run(&bsd, &release_0_8_1()), Err(UpdateError::NoAssetFor { .. })), "0.8.1 shipped no FreeBSD file");

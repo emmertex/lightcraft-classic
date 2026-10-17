@@ -5,6 +5,9 @@
 //! - `[identity]` keys (`APP_ID`, `SETTINGS_DIR`, …) are OS and file identity; the previous values live in
 //!   `[legacy]` (`LEGACY_SETTINGS_DIRS`, …) and are migrated from on first start.
 //! - `[stable]` keys (`XMP_NAMESPACE_URI`, …) never follow the name.
+//! - `[updates]` `public_keys` is [`UPDATES_PUBLIC_KEYS`]: the key a release's checksum list is signed with (two
+//!   while it is rotated), as text (empty when the brand file has none). They are parsed where they are used
+//!   (`lcc-updater`), and a key that does not parse is treated like none: nothing is installed.
 
 #![forbid(unsafe_code)]
 

@@ -86,7 +86,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
                 .color(t.text_dim),
         );
         if link(ui, "link:updateReleases", tr("Open the releases page")) {
-            let _ = crate::links::open(app, &format!("{}/releases", lcc_brand::REPOSITORY));
+            let _ = app.run("app.openReleasePage", json!({}));
         }
         settings(app, ui, &t);
         return;
@@ -117,15 +117,21 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
             if let Some(action) = a["action"].as_str() {
                 ui.label(egui::RichText::new(tr_format!("Installing it will {action}.", action = action)).color(t.text_label));
             }
-            ui.label(
-                egui::RichText::new(if a["verified"].as_bool().unwrap_or(false) {
-                    tr("The download is checked against the release's SHA-256 before anything is installed.")
-                } else {
-                    tr("The download is checked against the size the release states.")
-                })
-                .font(t.font(11.0))
-                .color(t.text_dim),
-            );
+            if a["verified"].as_bool().unwrap_or(false) {
+                ui.label(
+                    egui::RichText::new(tr("The download is checked against the release's SHA-256 before anything is installed."))
+                        .font(t.font(11.0))
+                        .color(t.text_dim),
+                );
+            } else {
+                // a build without an update key downloads nothing: say so, and offer the page instead
+                ui.label(
+                    egui::RichText::new(tr(
+                        "This build of {app} can't verify updates, so it doesn't download or install them: get the new version from its release page.",
+                    ))
+                    .color(t.text_label),
+                );
+            }
             let notes = a["notes"].as_str().unwrap_or("").trim().to_string();
             if !notes.is_empty() {
                 ui.add_space(4.0);
@@ -214,7 +220,15 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui) {
         if button(ui, "button:updateCheck", tr("Check Again")) && !checking {
             let _ = app.session.execute("update.check", &json!({}));
         }
-        if check == "found" && !ready && !downloading && button(ui, "button:updateDownload", tr("Download")) {
+        let can_verify = status["available"]["verified"].as_bool().unwrap_or(false);
+        if check == "found"
+            && !can_verify
+            && button(ui, "button:updateReleasePage", tr("Open the Release Page"))
+            && let Err(e) = app.run("app.openReleasePage", json!({}))
+        {
+            app.toast(ui.ctx(), e);
+        }
+        if check == "found" && can_verify && !ready && !downloading && button(ui, "button:updateDownload", tr("Download")) {
             let _ = app.session.execute("update.download", &json!({}));
         }
         if ready && button(ui, "button:updateInstall", tr("Install and Relaunch")) {

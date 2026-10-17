@@ -1,6 +1,9 @@
 //! The one error type: everything a check, download or install can fail with, worded for a dialog
 //! (no panics, no placeholders).
 
+/// What a build without an update key answers to a download or an install.
+pub const NO_KEY: &str = "this build can't verify updates (it was made without an update key), so it does not download or install them; get the new version from its release page";
+
 /// Why an update check, download or install did not finish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateError {
@@ -18,6 +21,11 @@ pub enum UpdateError {
     NoAssetFor { version: String, target: String },
     /// The download did not match its expected size or SHA-256.
     Verify(String),
+    /// The release's signed checksum list did not vouch for the file: missing, unreadable, not
+    /// signed by this build's key, or silent about the file.
+    Signature(String),
+    /// This build carries no update key, so it cannot verify an update and installs none.
+    NoKey,
     /// Writing the downloaded file failed (permissions, disk space).
     Io(String),
     /// Installing the downloaded file failed.
@@ -38,6 +46,8 @@ impl std::fmt::Display for UpdateError {
                 write!(f, "release {version} has no download for this system ({target}); get it from the releases page instead")
             }
             UpdateError::Verify(why) => write!(f, "the downloaded update did not check out: {why}"),
+            UpdateError::Signature(why) => write!(f, "the update could not be verified, so it was not installed: {why}"),
+            UpdateError::NoKey => write!(f, "{NO_KEY}"),
             UpdateError::Io(why) => write!(f, "{why}"),
             UpdateError::Install(why) => write!(f, "the update could not be installed: {why}"),
             UpdateError::Cancelled => write!(f, "cancelled"),
@@ -68,6 +78,8 @@ mod tests {
         assert!(UpdateError::Http { code: 403, what: "rate limited".into() }.to_string().contains("403"));
         assert!(UpdateError::Net("dns".into()).to_string().contains("dns"));
         assert_eq!(UpdateError::Cancelled.to_string(), "cancelled");
+        assert!(UpdateError::NoKey.to_string().starts_with("this build can't verify updates"));
+        assert!(UpdateError::Signature("SHA256SUMS.txt.sig is missing".into()).to_string().contains("not installed: SHA256SUMS.txt.sig is missing"));
     }
 
     #[test]

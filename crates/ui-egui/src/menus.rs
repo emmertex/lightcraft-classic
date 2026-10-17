@@ -294,6 +294,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.about", "About {app}", None, "Help"),
     ("app.checkForUpdates", "Check for Updates…", None, "Help"),
     ("app.installUpdate", "Install Update and Relaunch", None, "Help"),
+    ("app.openReleasePage", "Open the Release Page", None, ""),
     ("app.systemInfo", "System Info…", None, "Help"),
     ("app.openLogFolder", "Open Log Folder", None, "Help"),
     ("app.whatsNew", "What's New", None, "Help"),
@@ -1616,6 +1617,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 }
             }
         }
+        // the web build has no updater: the list of releases
+        #[cfg(target_arch = "wasm32")]
+        "app.openReleasePage" => crate::links::open(app, &format!("{}/releases", lcc_brand::REPOSITORY.trim_end_matches('/'))),
+        #[cfg(not(target_arch = "wasm32"))]
+        "app.openReleasePage" => {
+            // the offered release's own page, or the list of releases: never a URL from the caller
+            let url = match app.session.updater.available() {
+                Some(a) => lcc_engine::update::release_page(&a.tag),
+                None => lcc_engine::update::releases_page(),
+            };
+            crate::links::open(app, &url)
+        }
         "photo.editInPhotoCraft" => edit_in(app, &ctx, p, true),
         "photo.editInExternal" => {
             // a PSD or TIFF: ask Edit Original / a Copy / a Copy with Adjustments first, as Lightroom does
@@ -2369,6 +2382,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "file.addFolder" => app.services.pick_folder.is_some() && !crate::lightroom_import::is_running(app),
         "file.backupLibrary" => app.services.backup_library.is_some(),
         "app.openLogFolder" => app.services.reveal.is_some() && app.services.log_file.is_some(),
+        "app.openReleasePage" => app.services.open_url.is_some(),
         "file.restoreLibrary" => app.services.restore_library.is_some(),
         "app.clearRecentLibraries" => !app.ui.settings.recent_libraries.is_empty(),
         "compare.swap" | "compare.makeSelect" | "compare.set" => app.ui.view == ViewMode::Compare,

@@ -1,8 +1,9 @@
 //! `SHA256SUMS.txt` from a release: the checksums the pipeline publishes beside every artifact.
 //!
 //! It is coreutils' format — `<hex sha256>  <file name>` per line, `*` instead of the second space
-//! for binary mode, `#` comments — and it may be missing or truncated without that breaking
-//! anything (the size and the TLS-verified download still check out).
+//! for binary mode, `#` comments. The updater reads it only after its signature has checked out
+//! ([`crate::signature`]); a list that is missing, unsigned or silent about the file stops the
+//! update.
 
 /// The SHA-256 recorded for `name`, lower-case hex, if the file lists it.
 pub fn lookup(text: &str, name: &str) -> Option<String> {

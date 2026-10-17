@@ -66,6 +66,10 @@ fn app() -> Headless {
     let mut session = lcc_engine::Session::new();
     // a fresh updater: the settings are the defaults, not whatever this machine's are
     session.updater = lcc_engine::update::Updater::new(None);
+    // a throwaway test key (never a release key): these tests are about the dialog, and a build
+    // without a key installs nothing (lcc-engine's update tests cover that)
+    let key = lcc_updater::UpdateKey::parse("GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE=").unwrap();
+    session.updater.trust_test_key(Some(key));
     let app = LccApp::new(session, services());
     let mut h = Headless::new(app, [1200.0, 900.0], 1.0);
     // no start-up check: these tests drive the dialog themselves
@@ -79,6 +83,8 @@ fn offer(h: &mut Headless, dir: &Scratch, version: &str, kind: lcc_engine::updat
     use lcc_engine::update::{Kind, Progress, Staged};
     let file = dir.0.join(format!("app-{version}-{}.bin", kind.text()));
     std::fs::write(&file, b"an installer").unwrap();
+    // the hash the download step recorded (install hashes the file again before using it)
+    let sha256 = lcc_updater::hash_file(&file).unwrap();
     let engine_kind = match kind {
         Kind::Msi => lcc_updater::Kind::Msi,
         Kind::Dmg => lcc_updater::Kind::Dmg,
@@ -103,7 +109,7 @@ fn offer(h: &mut Headless, dir: &Scratch, version: &str, kind: lcc_engine::updat
         version: version.into(),
         path: file.clone(),
         bytes: 12,
-        sha256: "ab".repeat(32),
+        sha256,
         file: name,
         kind,
         notes: "### Fixed\n- a thing".into(),
@@ -241,6 +247,37 @@ fn a_checksum_list_is_never_offered_for_install() {
     h.step();
     let err = h.app.session.execute("update.install", &json!({"confirm": true})).expect_err("refused");
     assert!(err.to_string().contains("no file for this system"), "{err}");
+}
+
+/// A build without an update key (every build until the maintainer adds one) says it can't verify
+/// the release, offers no Download, and opens the release's page instead.
+#[test]
+fn a_build_that_cannot_verify_offers_the_release_page_not_a_download() {
+    let dir = Scratch::new("nokey");
+    let opened = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let mut h = app();
+    let seen = opened.clone();
+    h.app.services.open_url = Some(Box::new(move |url: &str| {
+        seen.lock().unwrap().push(url.to_string());
+        Ok(())
+    }));
+    h.app.session.updater.trust_test_key(None);
+    let _ = offer(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Archive);
+    // offered, not downloaded
+    h.app.session.updater.set_progress(lcc_engine::update::Progress::Idle);
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.checkForUpdates"}));
+    h.step();
+    let text = h.painted_text().join(" ");
+    assert!(text.contains("can't verify updates"), "the dialog says why nothing is downloaded: {text}");
+    assert!(!text.contains("checked against the size"), "and doesn't claim a check it doesn't make: {text}");
+    assert!(h.app.widgets.iter().all(|(w, _)| w != "button:updateDownload"), "no Download that could only fail");
+    assert!(h.app.widgets.iter().any(|(w, _)| w == "button:updateReleasePage"), "the release page is offered instead");
+    ask(&mut h, "ui.clickWidget", json!({"id": "button:updateReleasePage"}));
+    h.step();
+    assert_eq!(*opened.lock().unwrap(), vec![lcc_engine::update::release_page("v9.9.9")], "the button opens the offered release's page");
+    // the same through the command, as an agent would
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.openReleasePage"}));
+    assert_eq!(opened.lock().unwrap().len(), 2);
 }
 
 // ---------------------------------------------------------------- the start-up check is opt-in

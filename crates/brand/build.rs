@@ -40,6 +40,12 @@ fn main() {
             panic!("{}: missing required key `{required}`", path.display());
         }
     }
+    for (required, name, default) in OPTIONAL {
+        let (section, key) = required.split_once('.').unwrap();
+        if !entries.iter().any(|(s, k, _)| s == section && k == key) {
+            writeln!(out, "pub const {name}: {default};").unwrap();
+        }
+    }
     let dest = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("brand.rs");
     std::fs::write(dest, out).expect("write brand.rs");
 }
@@ -71,6 +77,12 @@ const REQUIRED: &[&str] = &[
     "legacy.preset_exts",
     "legacy.catalog_exts",
     "legacy.app_ids",
+];
+
+/// Keys a brand file may leave out (a fork's, the test brand): `(key, constant, its type and value when absent)`.
+const OPTIONAL: &[(&str, &str, &str)] = &[
+    // no key: the updater checks and links to the release, but installs nothing
+    ("updates.public_keys", "UPDATES_PUBLIC_KEYS", "&[&str] = &[]"),
 ];
 
 enum Value {

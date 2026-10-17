@@ -9,9 +9,14 @@
 //!    mirror) — compares the newest release's version with this build ([`version`]), and picks the
 //!    asset that belongs to this platform ([`target`]). Only files under this repository's release
 //!    downloads are offered, and only over https.
-//! 2. [`download`] fetches that asset into the cache folder, resuming an interrupted transfer,
-//!    capped, and checked against the size the feed states and the release's `SHA256SUMS.txt`
-//!    ([`checksum`]) before it is renamed into place. A file that fails its check is deleted.
+//! 2. [`download`] first reads the release's `SHA256SUMS.txt` and its signature
+//!    `SHA256SUMS.txt.sig`, and checks the signature against the key pinned in `brand.toml`
+//!    ([`signature`], [`UpdateKey`]). Then it fetches the asset into the cache folder, resuming an
+//!    interrupted transfer, capped, and checked against the size the feed states and the SHA-256 the
+//!    *signed* list records ([`checksum`]) before it is renamed into place. The feed's own hash is
+//!    never trusted. A missing list or signature, a bad signature, a file the list does not name, or
+//!    a file that fails its check stops the update and deletes what was staged; a build without a
+//!    key ([`UpdateError::NoKey`]) checks for updates but downloads and installs none.
 //! 3. [`install`] says what installing will do ([`install::Plan`]) and, when asked, does it: the
 //!    Windows installer runs, a macOS disk image is mounted and its app checked and swapped in for
 //!    the running one, an AppImage replaces itself, and anything else is laid out where the user can unpack
@@ -24,7 +29,9 @@
 //! Native only: on wasm32 the crate is empty (the web build updates by reloading the page).
 //!
 //! Sources: own design, from the documented GitHub Releases API and the Web Linking/CDN layout of
-//! release assets; version precedence follows Semantic Versioning 2.0.0.
+//! release assets; version precedence follows Semantic Versioning 2.0.0. The signed checksum list
+//! follows minisign's model (a detached ed25519 signature over the release's checksum file), in a
+//! plain format of its own.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![forbid(unsafe_code)]
@@ -33,6 +40,7 @@
 pub mod checksum;
 mod error;
 mod release;
+pub mod signature;
 mod version;
 
 mod check;
@@ -43,10 +51,11 @@ mod target;
 pub use check::{
     Cache, Checked, MAX_DOWNLOAD_BYTES, Options, REUSE_AFTER, Update, api_url, check, from_release, manifest_url, release_download_prefix,
 };
-pub use download::{Downloaded, client, download, part_path, stage_dir};
-pub use error::UpdateError;
+pub use download::{Downloaded, client, download, hash_file, part_path, recheck, stage_dir};
+pub use error::{NO_KEY, UpdateError};
 pub use install::{Plan, Restart, clean_up_after_update, install, install_with, plan, reveal, runs_from_appimage};
 pub use release::{Release, newest, version_of};
+pub use signature::UpdateKey;
 pub use target::{Asset, Kind, Os, Target};
 pub use version::Version;
 

@@ -38,6 +38,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
 /// `update.download [wait]`: fetch the file the check offered.
 fn download(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "update.download";
+    // refuses (and says why) when this build has no update key
     let activity = s.activity.clone();
     s.updater.start_download(&activity).map_err(|e| bad(C, e))?;
     if p.get("wait").and_then(Value::as_bool) == Some(true) {
@@ -57,6 +58,8 @@ fn cancel_download(s: &mut Session, _: &Value) -> Result<Value> {
 /// installing would do (the dialog shows that first).
 fn install(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "update.install";
+    // a build that cannot verify an update installs none, whatever is in the cache folder
+    s.updater.can_verify().map_err(|e| bad(C, e))?;
     let Some(staged) = s.updater.staged().cloned() else {
         return Err(bad(C, "no update has been downloaded: run update.check then update.download"));
     };
@@ -76,7 +79,16 @@ fn install(s: &mut Session, p: &Value) -> Result<Value> {
             "sha256": staged.sha256,
         }));
     }
-    let installed = update::install(&staged, s.desktop.as_ref()).map_err(|e| bad(C, e))?;
+    let installed = match update::install(&staged, s.desktop.as_ref()) {
+        Ok(installed) => installed,
+        Err(why) => {
+            // a file deleted by the last check is no longer ready: the dialog says why
+            if !staged.path.exists() {
+                s.updater.set_progress(Progress::Failed(why.clone()));
+            }
+            return Err(bad(C, why));
+        }
+    };
     let exit = installed.exit;
     let out = json!({"version": installed.version, "message": installed.message, "exit": exit});
     s.updater.set_installed(installed);
@@ -151,7 +163,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Status",
             [],
             None,
-            "{} → {version, platform, supported, check: never | running | current | found, download: idle | running | ready | failed | cancelled, checkAtStartup, prerelease, lastChecked, seenVersion, repo, page, staging, feed? (a feed other than the release's own), available?: {version, current, title, tag, published, notes, file, size, action, verified, kind}, progress?: {bytes, total}, staged?: {version, file, bytes, sha256, path, kind}, installed?: {version, message, exit}, error?} — what the updater knows right now",
+            "{} → {version, platform, supported, check: never | running | current | found, download: idle | running | ready | failed | cancelled, checkAtStartup, prerelease, lastChecked, seenVersion, repo, page, staging, feed? (a feed other than the release's own), available?: {version, current, title, tag, published, notes, file, size, action, verified (this build can check the release's signature; false: it downloads and installs nothing), kind, page (the release's own page)}, progress?: {bytes, total}, staged?: {version, file, bytes, sha256, path, kind}, installed?: {version, message, exit}, error?} — what the updater knows right now",
             always,
             status
         ),
@@ -169,7 +181,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download Update",
             [],
             None,
-            "{wait?: bool} — fetch the file the check offered for this system into the cache folder (resumable, size- and SHA-256-checked; the activity stack shows it and can cancel it). `wait: true` blocks until it is in, for one-shot callers → status",
+            "{wait?: bool} — fetch the file the check offered for this system into the cache folder: the release's SHA256SUMS.txt must carry a valid signature from the key this build was made with, and the file must match the size and the SHA-256 that signed list records (resumable; the activity stack shows it and can cancel it). A build without an update key refuses (\"this build can't verify updates\"). `wait: true` blocks until it is in, for one-shot callers → status",
             always,
             download
         ),
@@ -187,7 +199,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Install Update",
             [],
             None,
-            "{confirm?: bool} — without `confirm`: what installing the downloaded file would do ({summary, steps, destination, restart: quitAndRelaunch | quit | manual}). With `confirm: true`: do it — run the installer, replace the AppImage, or open the file's folder — and say whether the app has to quit ({message, exit})",
+            "{confirm?: bool} — refused by a build without an update key (\"this build can't verify updates\"). Without `confirm`: what installing the downloaded file would do ({summary, steps, destination, restart: quitAndRelaunch | quit | manual}). With `confirm: true`: do it — run the installer, replace the AppImage, or open the file's folder — and say whether the app has to quit ({message, exit})",
             always,
             install
         ),
@@ -230,6 +242,10 @@ mod tests {
         // in-memory only: no settings file, no library, no network
         let mut s = Session::new();
         s.updater = crate::update::Updater::new(None);
+        // a throwaway test key (never a release key), so these tests are about the commands and
+        // not about the brand's key; `crate::update::tests` covers a build without one
+        let key = lcc_updater::UpdateKey::parse("GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE=").expect("the test key");
+        s.updater.trust_test_key(Some(key));
         s
     }
 

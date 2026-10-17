@@ -815,7 +815,8 @@ jobs:
         run: gh release upload "$TAG" --clobber -- dist/release/*
 
   release:
-    timeout-minutes: 10
+    # room for the cold build of the signing tool (fresh CARGO_HOME, no cache, nice 19) before the upload
+    timeout-minutes: 30
     name: Draft GitHub Release
     needs: [version, macos, windows, linux, flatpak, linux-riscv64, freebsd, web]
     # Finishes whatever built: a platform that failed is named in the run summary and the draft's notes,
@@ -836,6 +837,10 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # no token left in .git/config for the build steps below to read; nothing in this job
+          # runs git against the remote (gh uses GH_TOKEN)
+          persist-credentials: false
       - name: GitHub CLI (gpu0 has none)
         run: bash .github/scripts/install-gh.sh
       - name: Start from an empty folder
@@ -858,7 +863,7 @@ jobs:
       - name: Checksums
         run: |
           # the platforms' own sums (binary-mode `*name` normalised), only for files on the draft
-          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"' | grep -v -e '^SHA256SUMS.txt ' -e '^latest.json ' >out/assets.txt || true
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"' | grep -v -e '^SHA256SUMS.txt ' -e '^SHA256SUMS.txt.sig ' -e '^latest.json ' >out/assets.txt || true
           [ -s out/assets.txt ] || { echo "::error::draft $TAG has no assets"; exit 1; }
           cat sums/*.txt 2>/dev/null | sed 's/^\([0-9a-f]\{64\}\) [ *]/\1  /' | sort -k2 -u >out/all-sums.txt
           : >out/SHA256SUMS.txt
@@ -868,6 +873,32 @@ jobs:
             echo "$line" >>out/SHA256SUMS.txt
           done <out/assets.txt
           cat out/SHA256SUMS.txt
+      # The in-app updater installs a release only when SHA256SUMS.txt carries a signature from the key
+      # pinned in brand.toml ([updates] public_keys; docs/releasing.md → Update signing key). The step
+      # signs with the UPDATE_SIGNING_KEY secret and checks the result against brand.toml before
+      # anything is uploaded; without the secret it warns and writes no .sig (the app then links to
+      # the release instead of installing it).
+      # The signing tool is built first, in a step with UPDATE_SIGNING_KEY and GH_TOKEN unset, into
+      # fresh folders under $RUNNER_TEMP (own CARGO_HOME and target dir, no compiler cache), so no build
+      # script or proc-macro runs next to the key and no shared build cache goes into the tool. That is
+      # all it protects against: this runner also builds other people's pull requests as the same
+      # user, and they can still reach this step through a .cargo/config.toml in any parent folder of
+      # the checkout (~/.cargo/config.toml too when the work folder is under $HOME) and through the
+      # shared ~/.rustup toolchain and ~/.cargo/bin/cargo. See docs/releasing.md → Runner trust.
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Build the signing tool (no secrets)
+        env:
+          GH_TOKEN: ""
+          RUSTC_WRAPPER: ""
+        run: |
+          fresh="$(mktemp -d "$RUNNER_TEMP/update-key.XXXXXX")"
+          CARGO_HOME="$fresh/cargo-home" CARGO_TARGET_DIR="$fresh/target" nice -n 19 cargo build --locked -p xtask
+          echo "XTASK_BIN=$fresh/target/debug/xtask" >>"$GITHUB_ENV"
+      - name: Sign the checksums
+        env:
+          GH_TOKEN: ""
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: bash .github/scripts/sign-checksums.sh out
       - name: Notes, checksums
         working-directory: out
         run: |
@@ -881,9 +912,17 @@ jobs:
           $notes"
           fi
           gh release edit "$TAG" --draft --notes "$notes"
-          gh release upload "$TAG" --clobber SHA256SUMS.txt
+          if [ -f SHA256SUMS.txt.sig ]; then
+            gh release upload "$TAG" --clobber SHA256SUMS.txt SHA256SUMS.txt.sig
+            signed="signed (\`SHA256SUMS.txt.sig\`)"
+          else
+            gh release upload "$TAG" --clobber SHA256SUMS.txt
+            # an earlier run's signature would not match this list
+            gh release delete-asset "$TAG" SHA256SUMS.txt.sig --yes 2>/dev/null || true
+            signed="**not signed**: the app will not install this release by itself"
+          fi
           {
-            echo "Draft release **$title** at \`${GITHUB_SHA::9}\`:"
+            echo "Draft release **$title** at \`${GITHUB_SHA::9}\`; checksums $signed:"
             echo
             sed 's/^/    /' SHA256SUMS.txt
           } >>"$GITHUB_STEP_SUMMARY"

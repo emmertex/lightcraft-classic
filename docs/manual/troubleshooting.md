@@ -57,8 +57,14 @@ download it for this system and install it; the app restarts afterwards. Things 
 - "Release X has no download for this system": that release has no file for this platform (a platform added
   after it was published, or one we don't package). Get it from the project's releases page, which the dialog
   links to.
-- The download is checked against the size the release states and, when the release publishes
-  `SHA256SUMS.txt`, against that SHA-256. A file that fails the check is deleted and nothing is installed.
+- Before anything is downloaded, the app checks that the release's checksum list (`SHA256SUMS.txt`) is
+  signed with the project's update key; the download must then match the size the release states and the
+  SHA-256 that signed list records. "The update could not be verified, so it was not installed: …" says
+  which check failed (the list or its signature is missing, it was signed with another key, or it doesn't
+  list the file); a file that fails the check is deleted and nothing is installed. Get that version from
+  the releases page instead, and tell the project.
+- "This build can't verify updates": the build was made without an update key (a fork or a build from
+  source). It still tells you when a new version is out; download it from the releases page.
 - A tarball or zip (Linux riscv64, FreeBSD, or a Windows portable build) is downloaded and its folder shown:
   quit the app and unpack it over the installation yourself.
 - "Check for updates when the app starts" is off until you turn it on (Settings → General, the welcome dialog

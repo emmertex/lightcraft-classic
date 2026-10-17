@@ -82,14 +82,19 @@ audio-out = ["lcc-audio-out/audio-out"]
 sam = ["dep:lcc-segment"]
 denoise = ["dep:lcc-denoise", "lcc-denoise/runtime", "lcc-gpu/denoise"]
 rawnind-model = ["denoise", "lcc-denoise/rawnind-model", "lcc-denoise-core/rawnind-model"]
+# Tests of other crates only (the UI's update dialog): `Updater::trust_test_key`, so they can stand in
+# a throwaway update key for the brand's. Never enabled by an app build.
+test-support = []
 
 [dev-dependencies]
 # tests record why they skip (`cargo xtask ci` lists the skips)
 lcc-testkit = { workspace = true }
 # HDR JPEG XL tests read the file's colour encoding
 jxl-oxide = { workspace = true }
-# the updater's end-to-end test builds a release with a real checksum
+# the updater's end-to-end test builds a release with a real checksum, signed with a throwaway key
 sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
 # Lossless synthetic HEIC files (the import test; decoded when the codecs' `heif` feature is on).
 lcc-heif = { workspace = true, features = ["testdata"] }
 libc = { workspace = true }

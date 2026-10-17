@@ -10,8 +10,10 @@ let opts = lcc_updater::Options::default();          // brand repository, this v
 if let Some(update) = lcc_updater::check(&opts, None, None)? {
     println!("{} → {}", update.current, update.version);   // 0.7.0 → 0.8.0
     println!("{} ({})", update.asset.name, update.action); // the file, and what installing it does
-    // fetch it (resumable, size- and SHA-256-checked) into the cache folder
-    let got = lcc_updater::download(&update, &lcc_updater::client()?, dir, None, None)?;
+    // fetch it into the cache folder: the release's SHA256SUMS.txt must be signed by the brand's key,
+    // and the file must match it (resumable, size- and SHA-256-checked)
+    let key = lcc_updater::UpdateKey::pinned();            // None: this build installs nothing
+    let got = lcc_updater::download(&update, key.as_ref(), &lcc_updater::client()?, dir, None, None)?;
     // say what would happen, then do it (installs over the running installation)
     let plan = lcc_updater::plan(update.asset.kind, &got.path, &update.version.to_text());
     let outcome = lcc_updater::install(update.asset.kind, &got, &update.version.to_text())?;
@@ -34,12 +36,24 @@ if let Some(update) = lcc_updater::check(&opts, None, None)? {
 - **The right file** is picked from the artifact names the pipeline already uses
   (`<binary>-<version>-<os>-<arch>…`): the MSI on Windows, the DMG on macOS, the AppImage on Linux
   x86_64/aarch64, and a tarball (or the portable zip) as a manual install anywhere else. An
-  installer always wins over an archive; the `SHA256SUMS.txt` asset is read for the hash, never
-  installed.
+  installer always wins over an archive; the `SHA256SUMS.txt` asset is never installed.
+- **Signed checksums** (`signature`). Before a download starts, the release's `SHA256SUMS.txt` and
+  `SHA256SUMS.txt.sig` are fetched from the file's own release folder and the signature (ed25519 over
+  the list's exact bytes, base64) is checked against the keys pinned in `brand.toml` (`[updates]
+  public_keys`, `lcc_brand::UPDATES_PUBLIC_KEYS`; `UpdateKey::pinned`). The SHA-256 the download must
+  match comes from that verified list only: the feed's `sha256` and GitHub's `digest` come from the
+  same place as the file and are never trusted on their own. Fails closed: no key (`UpdateError::NoKey`,
+  "this build can't verify updates"), a list or signature that cannot be fetched, a signature that does
+  not verify, a list that does not name the file, or a file whose name doesn't carry the offered
+  version as a whole `-<version>-<os>-` token (`signature::names_version`: an older release's signed
+  list and file served under a newer tag) stops the update (`UpdateError::Signature`) and deletes
+  whatever was staged under that name. Keys are made and releases signed with
+  `cargo xtask update-key` (docs/releasing.md → Update signing key).
 - **Downloads** resume from a `.part` file, are capped, and must match the size the feed states and
-  the SHA-256 the release publishes (the size alone when it publishes none) before they are renamed
-  into place. A file that fails its check is deleted. A file already there is re-hashed, not trusted
-  by name; a hostile asset name (`../../…`) is reduced to its last path segment.
+  the SHA-256 the signed list records before they are renamed into place. A file that fails its check
+  is deleted. A file already there is re-hashed, not trusted by name; a hostile asset name (`../../…`)
+  is reduced to its last path segment. `recheck` hashes a staged file again right before it is
+  installed, and deletes it if it changed since its check.
 - **Installing** is `install::plan` (what will happen, in words, before anything does) and
   `install::install`: `msiexec` runs the Windows installer; on macOS the disk image is mounted
   read-only, its `<display name>.app` (by that name, never a link) is copied beside the running
@@ -62,12 +76,16 @@ if let Some(update) = lcc_updater::check(&opts, None, None)? {
 
 Own design, from the documented [GitHub Releases API](https://docs.github.com/rest/releases) and
 the layout of release assets; version precedence follows [Semantic Versioning
-2.0.0](https://semver.org/spec/v2.0.0.html). The shape of the flow (check → download → install and
-restart, with a manifest beside the release) follows Tauri's updater as a design reference, not its
-code.
+2.0.0](https://semver.org/spec/v2.0.0.html). The signed checksum list follows
+[minisign](https://jedisct1.github.io/minisign/)'s model (a detached ed25519 signature over the release's
+checksum file, verified against a key the app ships with), in a plain format of its own; ed25519
+signatures per RFC 8032, checked with `ed25519-dalek`'s strict verification. The shape of the flow
+(check → download → install and restart, with a manifest beside the release) follows Tauri's updater
+as a design reference, not its code.
 
-Tests use local HTTP servers for the feed, the checksum list and the file: they make no internet
-requests. The end-to-end path (feed → download → staged file) is covered in `lcc-engine`.
+Tests use local HTTP servers for the feed, the checksum list, its signature and the file, and
+throwaway keys made in the test: they make no internet requests. The end-to-end path (feed →
+download → staged file) is covered in `lcc-engine`.
 
 The macOS install is after craft-launcher's in-process disk image install
 ([storytold/craft-launcher](https://github.com/storytold/craft-launcher), Apache-2.0), written anew

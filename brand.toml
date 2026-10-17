@@ -30,6 +30,13 @@ xmp_namespace_uri    = "https://ns.example.invalid/develop/1.0/"
 xmp_namespace_prefix = "nnyd"
 catalog_magic        = "PHOTO-CATALOG"      # file-format magic; neutral on purpose
 
+# The key the in-app updater checks a release's SHA256SUMS.txt.sig against (ed25519 public key, base64;
+# `cargo xtask update-key new` prints it); two while the key is being rotated. Empty: this build checks for
+# updates and links to the release, but never downloads or installs one. A fork sets its own.
+# Changing it: docs/releasing.md → Update signing key.
+[updates]
+public_keys = []
+
 # Previous identities, read on startup for migration (settings, catalogs, presets, env vars).
 [legacy]
 settings_dirs = ["NoNameYet", "LightCraft"]
