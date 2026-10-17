@@ -27,6 +27,14 @@ pub struct Histogram {
     /// neutral pixel (`R == G == B`) lands in the middle cell `(SCOPE_MID, SCOPE_MID)`.
     #[serde(skip)]
     pub scope: Vec<u32>,
+    /// Per-column tonal distributions for the Waveform and RGB Parade views ([`HistogramMode::Waveform`],
+    /// [`HistogramMode::Parade`]): [`Self::WAVE_PLANES`] planes (luminance, red, green, blue), each
+    /// [`Self::WAVE_COLS`] columns left to right across the image × [`Self::WAVE_LEVELS`] display-encoded levels
+    /// (level 0 black), stored plane by plane, column by column ([`Self::wave_at`]). Counts saturate. Empty when
+    /// the histogram knows no positions ([`Self::of_bins`], [`Self::of_hdr`]) or dropped them
+    /// ([`Self::without_waveform`]).
+    #[serde(skip)]
+    pub wave: Vec<u16>,
     pub total: u32,
     /// HDR histograms: the first bin above SDR white, and the stops above SDR white the last bin
     /// reaches. `None` for SDR histograms (every bin is SDR).
@@ -90,10 +98,15 @@ pub enum HistogramMode {
     /// Polar chrominance scope (`Cb` horizontal, `Cr` vertical) with primary/secondary targets and
     /// the skin-tone line.
     Vectorscope,
+    /// The luminance of each column of the photo, left to right as in the photo, black at the bottom.
+    Waveform,
+    /// Red, green and blue waveforms side by side.
+    Parade,
 }
 
 impl HistogramMode {
-    pub const ALL: [HistogramMode; 5] = [Self::RgbOverlap, Self::Luminance, Self::ChannelsSeparated, Self::Chroma, Self::Vectorscope];
+    pub const ALL: [HistogramMode; 7] =
+        [Self::RgbOverlap, Self::Luminance, Self::ChannelsSeparated, Self::Chroma, Self::Vectorscope, Self::Waveform, Self::Parade];
 
     /// The id the commands, the control channel and the settings file use.
     pub fn name(self) -> &'static str {
@@ -103,6 +116,8 @@ impl HistogramMode {
             Self::ChannelsSeparated => "channels",
             Self::Chroma => "chroma",
             Self::Vectorscope => "vectorscope",
+            Self::Waveform => "waveform",
+            Self::Parade => "parade",
         }
     }
 
@@ -114,6 +129,8 @@ impl HistogramMode {
             Self::ChannelsSeparated => "Separated Channels",
             Self::Chroma => "Chroma",
             Self::Vectorscope => "Vectorscope",
+            Self::Waveform => "Waveform",
+            Self::Parade => "RGB Parade",
         }
     }
 
@@ -125,12 +142,19 @@ impl HistogramMode {
             Self::ChannelsSeparated => "R/G/B",
             Self::Chroma => "Chroma",
             Self::Vectorscope => "Vector",
+            Self::Waveform => "Wave",
+            Self::Parade => "Parade",
         }
     }
 
     /// Whether this mode is a 2D scope rather than a left-to-right tonal curve.
     pub fn is_scope(self) -> bool {
-        matches!(self, Self::Vectorscope)
+        matches!(self, Self::Vectorscope | Self::Waveform | Self::Parade)
+    }
+
+    /// Whether this mode draws the photo's columns left to right (the waveform scopes).
+    pub fn is_waveform(self) -> bool {
+        matches!(self, Self::Waveform | Self::Parade)
     }
 
     /// The mode a settings file or command parameter names; `None` for anything else (callers fall
@@ -286,6 +310,18 @@ fn bump(ch: &mut [u32], i: usize) {
     }
 }
 
+/// Add one to waveform column `col` at the level of each of `values` (luminance, red, green, blue).
+#[inline]
+fn bump_wave(wave: &mut [u16], col: usize, values: [u8; 4]) {
+    let col = col.min(Histogram::WAVE_COLS - 1);
+    for (k, v) in values.into_iter().enumerate() {
+        let level = v as usize * Histogram::WAVE_LEVELS / 256;
+        if let Some(c) = wave.get_mut(k * Histogram::WAVE_CELLS + col * Histogram::WAVE_LEVELS + level) {
+            *c = c.saturating_add(1);
+        }
+    }
+}
+
 /// Bin `i` of `ch`, or 0 outside the bins.
 fn at(ch: &[u32], i: usize) -> u32 {
     ch.get(i).copied().unwrap_or(0)
@@ -383,7 +419,53 @@ impl Histogram {
 
     fn empty(hdr: Option<HdrBins>) -> Histogram {
         let bins = || vec![0; Self::BINS];
-        Histogram { r: bins(), g: bins(), b: bins(), luma: bins(), chroma: bins(), scope: vec![0; Self::SCOPE_CELLS], total: 0, hdr }
+        Histogram {
+            r: bins(),
+            g: bins(),
+            b: bins(),
+            luma: bins(),
+            chroma: bins(),
+            scope: vec![0; Self::SCOPE_CELLS],
+            wave: Vec::new(),
+            total: 0,
+            hdr,
+        }
+    }
+
+    /// Columns of each waveform plane, across the image.
+    pub const WAVE_COLS: usize = 128;
+    /// Levels of each waveform column, black to white (four display-encoded values each).
+    pub const WAVE_LEVELS: usize = 64;
+    /// Cells of one waveform plane.
+    pub const WAVE_CELLS: usize = Self::WAVE_COLS * Self::WAVE_LEVELS;
+    /// Waveform planes: luminance, red, green, blue.
+    pub const WAVE_PLANES: usize = 4;
+
+    /// Count of waveform `plane` ([`Channel::Luminance`], `Red`, `Green` or `Blue`) in column `col` at `level`; 0
+    /// outside the grid, for another channel, or without a waveform.
+    pub fn wave_at(&self, plane: Channel, col: usize, level: usize) -> u16 {
+        let k = match plane {
+            Channel::Luminance => 0,
+            Channel::Red => 1,
+            Channel::Green => 2,
+            Channel::Blue => 3,
+            Channel::Chroma => return 0,
+        };
+        if col >= Self::WAVE_COLS || level >= Self::WAVE_LEVELS {
+            return 0;
+        }
+        self.wave.get(k * Self::WAVE_CELLS + col * Self::WAVE_LEVELS + level).copied().unwrap_or(0)
+    }
+
+    /// Whether the waveform planes hold anything.
+    pub fn has_waveform(&self) -> bool {
+        self.wave.iter().any(|&c| c > 0)
+    }
+
+    /// The histogram without its waveform planes (what a thumbnail keeps: only the loupe's waveform is drawn).
+    pub fn without_waveform(mut self) -> Histogram {
+        self.wave = Vec::new();
+        self
     }
 
     /// Count in cell `(bx, by)` of the vectorscope grid, or 0 outside `0..SCOPE_BINS`.
@@ -394,16 +476,29 @@ impl Histogram {
     /// Histogram of linear RGB samples (1 = SDR white) reaching `stops` stops above SDR white.
     /// `samples` are visited at most ~1 MP of them (evenly strided).
     pub fn of_hdr(samples: &[[f32; 3]], stops: f32) -> Histogram {
+        Self::of_hdr_image(samples, 0, stops)
+    }
+
+    /// [`Self::of_hdr`] of an image `width` samples wide (row by row), with its waveform: levels are display-encoded
+    /// as the SDR histogram's, so everything at or above SDR white sits on the top level. Width 0: no waveform.
+    pub fn of_hdr_image(samples: &[[f32; 3]], width: usize, stops: f32) -> Histogram {
         let bins = HdrBins { from: Self::HDR_FROM, stops };
         let mut h = Self::empty(Some(bins));
+        if width > 0 {
+            h.wave = vec![0; Self::WAVE_PLANES * Self::WAVE_CELLS];
+        }
         let scale = saturation_table();
         let step = (samples.len() / 1_000_000).max(1);
-        for c in samples.iter().step_by(step) {
+        for (i, c) in samples.iter().enumerate().step_by(step) {
             let (r, g, b) = (c[0], c[1], c[2]);
             // the same display encoding the SDR histogram bins by, so chroma and the vectorscope
             // mean one thing
             let e = lcc_color::transfer::encode_srgb8;
             let (er, eg, eb) = (e(r), e(g), e(b));
+            if let Some(col) = ((i % width.max(1)) * Self::WAVE_COLS).checked_div(width) {
+                let l = (er as u32 * 54 + eg as u32 * 183 + eb as u32 * 19) >> 8;
+                bump_wave(&mut h.wave, col, [l.min(255) as u8, er, eg, eb]);
+            }
             bump(&mut h.r, bins.bin(r));
             bump(&mut h.g, bins.bin(g));
             bump(&mut h.b, bins.bin(b));
@@ -438,7 +533,7 @@ impl Histogram {
     /// the total, the first HDR bin (0: SDR) and the HDR stops as `f32` bits, then the vectorscope
     /// grid (`SCOPE_CELLS` words).
     pub fn to_words(&self) -> Vec<u32> {
-        let mut w = Vec::with_capacity(5 * Self::BINS + 3 + Self::SCOPE_CELLS);
+        let mut w = Vec::with_capacity(5 * Self::BINS + 3 + Self::SCOPE_CELLS + Self::WAVE_WORDS);
         for ch in [&self.r, &self.g, &self.b, &self.luma, &self.chroma] {
             w.extend(ch.iter().copied().chain(std::iter::repeat(0)).take(Self::BINS));
         }
@@ -446,8 +541,16 @@ impl Histogram {
         let (from, stops) = self.hdr.map_or((0, 0.0), |b| (b.from as u32, b.stops));
         w.extend([from, stops.to_bits()]);
         w.extend(self.scope.iter().copied().chain(std::iter::repeat(0)).take(Self::SCOPE_CELLS));
+        // the waveform, two cells a word, when there is one
+        if !self.wave.is_empty() {
+            let cell = |i: usize| self.wave.get(i).copied().unwrap_or(0) as u32;
+            w.extend((0..Self::WAVE_WORDS).map(|i| cell(2 * i) | cell(2 * i + 1) << 16));
+        }
         w
     }
+
+    /// Words [`Self::to_words`] packs the waveform planes into.
+    const WAVE_WORDS: usize = Self::WAVE_PLANES * Self::WAVE_CELLS / 2;
 
     /// [`Histogram::to_words`] back; also takes the older layouts without the vectorscope grid, the
     /// chroma channel or the HDR words. `None` for anything malformed.
@@ -456,10 +559,11 @@ impl Histogram {
         let sc = Self::SCOPE_CELLS;
         // 4 channels (before chroma existed) or 5, with or without the two HDR words and the
         // vectorscope tail
-        let (channels, has_scope) = match w.len() {
-            l if l == 4 * n + 1 || l == 4 * n + 3 => (4, false),
-            l if l == 5 * n + 1 || l == 5 * n + 3 => (5, false),
-            l if l == 5 * n + 3 + sc => (5, true),
+        let (channels, has_scope, has_wave) = match w.len() {
+            l if l == 4 * n + 1 || l == 4 * n + 3 => (4, false, false),
+            l if l == 5 * n + 1 || l == 5 * n + 3 => (5, false, false),
+            l if l == 5 * n + 3 + sc => (5, true, false),
+            l if l == 5 * n + 3 + sc + Self::WAVE_WORDS => (5, true, true),
             _ => return None,
         };
         let ch = |k: usize| w.get(k * n..(k + 1) * n).map(<[u32]>::to_vec);
@@ -472,7 +576,12 @@ impl Histogram {
             _ => None,
         };
         let scope = if has_scope { w.get(5 * n + 3..5 * n + 3 + sc)?.to_vec() } else { vec![0; sc] };
-        Some(Histogram { r: ch(0)?, g: ch(1)?, b: ch(2)?, luma: ch(3)?, chroma, scope, total: *w.get(channels * n)?, hdr })
+        let wave = if has_wave {
+            w.get(5 * n + 3 + sc..)?.iter().flat_map(|&word| [(word & 0xffff) as u16, (word >> 16) as u16]).collect()
+        } else {
+            Vec::new()
+        };
+        Some(Histogram { r: ch(0)?, g: ch(1)?, b: ch(2)?, luma: ch(3)?, chroma, scope, wave, total: *w.get(channels * n)?, hdr })
     }
 
     /// The five bin sets, by [`Channel`].
@@ -498,17 +607,22 @@ impl Histogram {
 
     pub fn of_srgb8(img: &Rgba8) -> Histogram {
         let mut h = Self::empty(None);
+        h.wave = vec![0; Self::WAVE_PLANES * Self::WAVE_CELLS];
         let scale = saturation_table();
         // Sample at most ~1 MP for speed.
         let step = ((img.len() as f64 / 1_000_000.0).sqrt().ceil() as usize).max(1);
+        // the waveform column of a sample by its place among the samples of its row, so a histogram of just the
+        // sampled pixels (`engine::display`) has the same columns
+        let across = img.width.div_ceil(step).max(1);
         for y in (0..img.height).step_by(step) {
-            for x in (0..img.width).step_by(step) {
+            for (i, x) in (0..img.width).step_by(step).enumerate() {
                 let p = img.get(x, y);
                 bump(&mut h.r, p[0] as usize);
                 bump(&mut h.g, p[1] as usize);
                 bump(&mut h.b, p[2] as usize);
                 let l = (p[0] as u32 * 54 + p[1] as u32 * 183 + p[2] as u32 * 19) >> 8;
                 bump(&mut h.luma, (l.min(255)) as usize);
+                bump_wave(&mut h.wave, i * Self::WAVE_COLS / across, [l.min(255) as u8, p[0], p[1], p[2]]);
                 bump(&mut h.chroma, chroma_bin(&scale, p[0], p[1], p[2]));
                 bump_scope(&mut h.scope, p[0], p[1], p[2]);
                 h.total = h.total.saturating_add(1);
@@ -573,6 +687,46 @@ mod tests {
         assert_eq!(h.percentile(0.25), 0.0);
         assert_eq!(h.percentile(0.75), 1.0);
         assert_eq!(h.above_sdr(), 0.0);
+    }
+
+    /// The waveform keeps where in the photo a tone is: a photo dark on the left and white on the right has its
+    /// left columns at the bottom level and its right ones at the top; each colour has its own plane.
+    #[test]
+    fn the_waveform_places_tones_by_column() {
+        let img = Rgba8::from_fn(200, 50, |x, _| if x < 100 { [0, 0, 0, 255] } else { [255, 0, 0, 255] });
+        let h = Histogram::of_srgb8(&img);
+        assert!(h.has_waveform());
+        let (cols, top) = (Histogram::WAVE_COLS, Histogram::WAVE_LEVELS - 1);
+        let column = |plane, col| (0..Histogram::WAVE_LEVELS).map(|l| h.wave_at(plane, col, l) as u32).collect::<Vec<_>>();
+        let sum = |plane, col| column(plane, col).iter().sum::<u32>();
+        // left half: black in every plane; right half: red at the top of the red plane, dark elsewhere
+        assert!(column(Channel::Luminance, 0)[0] > 0 && sum(Channel::Luminance, 0) == column(Channel::Luminance, 0)[0]);
+        assert!(column(Channel::Red, cols - 1)[top] > 0 && column(Channel::Green, cols - 1)[0] > 0);
+        let luma_right = column(Channel::Luminance, cols - 1);
+        assert!(luma_right.iter().position(|&c| c > 0).is_some_and(|l| l > 0 && l < top), "red's luminance is mid-grey: {luma_right:?}");
+        // every sample once per plane
+        let all: u32 = (0..cols).map(|c| sum(Channel::Blue, c)).sum();
+        assert_eq!(all, h.total);
+        assert_eq!(h.wave_at(Channel::Chroma, 0, 0), 0);
+        assert_eq!(h.wave_at(Channel::Red, cols, 0), 0, "outside the grid");
+        assert!(!h.clone().without_waveform().has_waveform());
+        // across a worker boundary and back
+        assert_eq!(Histogram::from_words(&h.to_words()), Some(h.clone()));
+        let none = h.clone().without_waveform();
+        assert_eq!(Histogram::from_words(&none.to_words()), Some(none));
+    }
+
+    /// An HDR image's waveform reads display-encoded levels (SDR white and above at the top); without a width
+    /// there is none.
+    #[test]
+    fn an_hdr_waveform_tops_out_at_sdr_white() {
+        let samples: Vec<[f32; 3]> = (0..8).map(|i| if i % 4 < 2 { [0.0; 3] } else { [6.0; 3] }).collect();
+        let h = Histogram::of_hdr_image(&samples, 4, 4.0);
+        let top = Histogram::WAVE_LEVELS - 1;
+        // samples 2 and 3 of each row are the bright ones
+        let col = |x: usize| x * Histogram::WAVE_COLS / 4;
+        assert_eq!((h.wave_at(Channel::Luminance, col(0), 0), h.wave_at(Channel::Luminance, col(3), top)), (2, 2));
+        assert!(!Histogram::of_hdr(&samples, 4.0).has_waveform());
     }
 
     /// The chroma channel bins HSV saturation of the display-encoded pixels: neutrals in bin 0,
@@ -703,12 +857,13 @@ mod tests {
     fn modes_and_scales_round_trip_through_their_names() {
         assert_eq!(HistogramMode::default(), HistogramMode::RgbOverlap);
         assert_eq!(HistogramScale::default(), HistogramScale::Linear);
-        assert_eq!(HistogramMode::ALL.len(), 5);
+        assert_eq!(HistogramMode::ALL.len(), 7);
         assert_eq!(HistogramScale::ALL.len(), 2);
         for m in HistogramMode::ALL {
             assert_eq!(HistogramMode::parse(m.name()), Some(m));
             assert!(!m.label().is_empty());
-            assert_eq!(m.is_scope(), m == HistogramMode::Vectorscope);
+            assert_eq!(m.is_scope(), matches!(m, HistogramMode::Vectorscope | HistogramMode::Waveform | HistogramMode::Parade));
+            assert_eq!(m.is_waveform(), matches!(m, HistogramMode::Waveform | HistogramMode::Parade));
         }
         for s in HistogramScale::ALL {
             assert_eq!(HistogramScale::parse(s.name()), Some(s));
@@ -716,7 +871,8 @@ mod tests {
         }
         assert_eq!(HistogramMode::RgbOverlap.next(), HistogramMode::Luminance);
         assert_eq!(HistogramMode::Chroma.next(), HistogramMode::Vectorscope);
-        assert_eq!(HistogramMode::Vectorscope.next(), HistogramMode::RgbOverlap, "the cycle wraps");
+        assert_eq!(HistogramMode::Vectorscope.next(), HistogramMode::Waveform);
+        assert_eq!(HistogramMode::Parade.next(), HistogramMode::RgbOverlap, "the cycle wraps");
         assert_eq!(HistogramScale::Logarithmic.next(), HistogramScale::Linear);
         assert_eq!(HistogramMode::parse("nope"), None);
         assert_eq!(HistogramScale::parse(""), None);
@@ -764,7 +920,7 @@ mod tests {
     fn words_round_trip_and_reject_garbage() {
         let img = Rgba8::from_fn(8, 8, |x, y| [(x * 30) as u8, (y * 30) as u8, 9, 255]);
         let sdr = Histogram::of_srgb8(&img);
-        assert_eq!(sdr.to_words().len(), 5 * Histogram::BINS + 3 + Histogram::SCOPE_CELLS);
+        assert_eq!(sdr.to_words().len(), 5 * Histogram::BINS + 3 + Histogram::SCOPE_CELLS + Histogram::WAVE_WORDS);
         assert_eq!(Histogram::from_words(&sdr.to_words()), Some(sdr.clone()));
         let hdr = Histogram::of_hdr(&[[0.5, 2.0, 9.0]], 4.0);
         assert_eq!(Histogram::from_words(&hdr.to_words()), Some(hdr));
@@ -774,10 +930,10 @@ mod tests {
         legacy.push(sdr.total);
         assert_eq!(
             Histogram::from_words(&legacy),
-            Some(Histogram { chroma: vec![0; Histogram::BINS], scope: vec![0; Histogram::SCOPE_CELLS], ..sdr.clone() }),
+            Some(Histogram { chroma: vec![0; Histogram::BINS], scope: vec![0; Histogram::SCOPE_CELLS], wave: Vec::new(), ..sdr.clone() }),
         );
         let five_no_scope = &sdr.to_words()[..5 * Histogram::BINS + 3];
-        assert_eq!(Histogram::from_words(five_no_scope), Some(Histogram { scope: vec![0; Histogram::SCOPE_CELLS], ..sdr.clone() }),);
+        assert_eq!(Histogram::from_words(five_no_scope), Some(Histogram { scope: vec![0; Histogram::SCOPE_CELLS], wave: Vec::new(), ..sdr.clone() }),);
         assert_eq!(Histogram::from_words(&[1, 2, 3]), None);
         assert_eq!(Histogram::from_words(&legacy[..four]), None, "a truncated histogram is nothing");
         assert_eq!(Histogram::from_words(&sdr.to_words()[..four + 2]), None, "a half-written HDR tail is nothing");

@@ -80,14 +80,22 @@ fn the_mode_and_scale_commands_select_step_and_reject_junk() {
     assert_eq!(h.app.ui.histogram_mode, "rgb", "the panel opens on the target app's own overlay");
     assert_eq!(h.app.ui.histogram_scale, "linear");
 
-    for mode in ["luminance", "channels", "chroma", "vectorscope", "rgb"] {
+    for mode in ["luminance", "channels", "chroma", "vectorscope", "waveform", "parade", "rgb"] {
         let out = h.app.run("view.histogram.mode", json!({"mode": mode})).expect("a known mode");
         assert_eq!(out["mode"], mode);
         assert_eq!(h.app.ui.histogram_mode, mode);
         h.step();
     }
     // no parameter: the next mode, wrapping at the end
-    for (from, to) in [("rgb", "luminance"), ("luminance", "channels"), ("channels", "chroma"), ("chroma", "vectorscope"), ("vectorscope", "rgb")] {
+    for (from, to) in [
+        ("rgb", "luminance"),
+        ("luminance", "channels"),
+        ("channels", "chroma"),
+        ("chroma", "vectorscope"),
+        ("vectorscope", "waveform"),
+        ("waveform", "parade"),
+        ("parade", "rgb"),
+    ] {
         set(&mut h, "view.histogram.mode", "mode", from);
         let out = h.app.run("view.histogram.mode", json!({})).expect("a step");
         assert_eq!(out["mode"], to, "stepping from {from}");
@@ -103,9 +111,9 @@ fn the_mode_and_scale_commands_select_step_and_reject_junk() {
     assert_eq!(h.app.run("view.histogram.scale", json!({})).expect("a step")["scale"], "linear");
 
     // anything else is an error naming the values it takes, and changes nothing
-    for bad in ["LUMINANCE", "parade", "", "rgb "] {
+    for bad in ["LUMINANCE", "waves", "", "rgb "] {
         let e = h.app.run("view.histogram.mode", json!({"mode": bad})).expect_err("an unknown mode");
-        assert!(e.contains("rgb|luminance|channels|chroma|vectorscope"), "{bad}: {e}");
+        assert!(e.contains("rgb|luminance|channels|chroma|vectorscope|waveform|parade"), "{bad}: {e}");
         assert_eq!(h.app.ui.histogram_mode, "rgb");
     }
     let e = h.app.run("view.histogram.scale", json!({"scale": "log"})).expect_err("an unknown scale");
@@ -356,4 +364,48 @@ fn a_clipping_indicator_previews_the_overlay_it_stands_for() {
     h.step();
     assert!(h.app.ui.show_clipping);
     assert_eq!(crate::panels::detail::view_overlay(&h.app, &d, false), lcc_pipeline::Overlay::Clipping(None));
+}
+
+/// The Waveform draws the loupe photo's columns left to right in neutral grey over a graticule, the RGB Parade
+/// the three channels in three side-by-side tracks of their own colours; only the loupe's histogram keeps the
+/// waveform planes, thumbnails' don't.
+#[test]
+fn the_waveform_views_draw_the_photo_by_column() {
+    let mut h = edit_panel();
+    let main = h.app.renderer.textures.get(&Slot::Main).and_then(|t| t.histogram.clone()).expect("the loupe's histogram");
+    assert!(main.has_waveform(), "the loupe keeps its waveform");
+    let id = h.app.session.active().expect("a photo");
+    if let Some(thumb) = h.app.renderer.textures.get(&Slot::Thumb(id)).and_then(|t| t.histogram.clone()) {
+        assert!(!thumb.has_waveform(), "a thumbnail drops it");
+    }
+    set(&mut h, "view.histogram.mode", "mode", "waveform");
+    h.settle(SETTLE);
+    let colors = plot_colors(&h);
+    assert!(!colors.is_empty(), "the waveform is drawn");
+    assert!(colors.iter().all(|c| c.r() == c.g() && c.g() == c.b()), "the waveform is neutral: {colors:?}");
+
+    set(&mut h, "view.histogram.mode", "mode", "parade");
+    h.settle(SETTLE);
+    let plot = rect(&h, "histogram:plot");
+    let tracks = crate::panels::histogram::waveform_tracks(plot, lcc_raster::HistogramMode::Parade);
+    assert_eq!(tracks.len(), 3);
+    assert!(tracks.windows(2).all(|w| w[0].0.right() < w[1].0.left()), "side by side");
+    let mut seen = [false; 3];
+    for shape in h.view.painted_shapes() {
+        let egui::Shape::Mesh(mesh) = shape else { continue };
+        for v in &mesh.vertices {
+            for (k, (track, _, color)) in tracks.iter().enumerate() {
+                // a cell's colour is its channel's, faded by how few pixels it holds
+                let hue = |c: Color32| [c.r() as f32, c.g() as f32, c.b() as f32];
+                let same = |a: [f32; 3], b: [f32; 3]| {
+                    let (ma, mb) = (a.iter().cloned().fold(0.0, f32::max).max(1.0), b.iter().cloned().fold(0.0, f32::max).max(1.0));
+                    a.iter().zip(&b).all(|(x, y)| (x / ma - y / mb).abs() < 0.05)
+                };
+                if track.contains(v.pos) && v.color.a() > 0 && same(hue(v.color), hue(*color)) {
+                    seen[k] = true;
+                }
+            }
+        }
+    }
+    assert_eq!(seen, [true; 3], "each track draws its channel");
 }

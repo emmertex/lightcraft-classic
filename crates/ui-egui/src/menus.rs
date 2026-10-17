@@ -1054,8 +1054,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "view.histogram.mode" => {
-            // {mode?: rgb | luminance | channels | chroma}; no parameter steps to the next one, as
-            // the overlay-mode commands do. Selecting a mode shows the panel it is about.
+            // {mode?: rgb | luminance | channels | chroma | vectorscope | waveform | parade}; no parameter steps to the
+            // next one, as the overlay-mode commands do. Selecting a mode shows the panel it is about.
             use lcc_raster::HistogramMode;
             let cur = HistogramMode::parse(&app.ui.histogram_mode).unwrap_or_default();
             let next = match p.get("mode").and_then(Value::as_str) {

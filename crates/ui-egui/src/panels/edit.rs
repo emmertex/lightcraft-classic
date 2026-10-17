@@ -630,7 +630,14 @@ fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     // label row under the plot; a 2D scope gets a taller plot instead so its disc has room
     let hdr = hist.as_ref().and_then(|h| h.hdr).filter(|_| !mode.is_scope());
     let legend = if hdr.is_some() { 26.0 } else { 0.0 };
-    let height = if mode.is_scope() { 184.0 } else { 118.0 + legend };
+    // (the waveforms are as wide as the panel: they need less height than the disc)
+    let height = if mode.is_waveform() {
+        150.0
+    } else if mode.is_scope() {
+        184.0
+    } else {
+        118.0 + legend
+    };
     let (r, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click_and_drag());
     crate::widgets::announce(&resp, crate::i18n::tr("Histogram"));
     register(ui.ctx(), "histogram", r);

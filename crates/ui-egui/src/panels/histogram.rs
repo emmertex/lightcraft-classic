@@ -14,7 +14,7 @@ use egui::epaint::{Mesh, Vertex};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Response, Shape, Stroke, pos2, vec2};
 use lcc_catalog::PhotoId;
 use lcc_develop::{ControlSpec, controls};
-use lcc_raster::{Histogram, HistogramMode, HistogramScale, robust_peak, scope_rgb, scope_uv};
+use lcc_raster::{Channel, Histogram, HistogramMode, HistogramScale, robust_peak, scope_rgb, scope_uv};
 use serde_json::json;
 
 use crate::LccApp;
@@ -457,6 +457,65 @@ fn paint_vectorscope(p: &Painter, plot: Rect, h: &Histogram, scale: HistogramSca
     }
 }
 
+/// The tracks of a waveform view in `plot`: one for the Waveform, three side by side for the RGB Parade, with
+/// the plane each draws and its colour.
+pub fn waveform_tracks(plot: Rect, mode: HistogramMode) -> Vec<(Rect, Channel, Color32)> {
+    if mode != HistogramMode::Parade {
+        return vec![(plot, Channel::Luminance, Color32::from_gray(232))];
+    }
+    let gap = 4.0;
+    let w = ((plot.width() - 2.0 * gap) / 3.0).max(1.0);
+    [Channel::Red, Channel::Green, Channel::Blue]
+        .into_iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let left = plot.left() + k as f32 * (w + gap);
+            (
+                Rect::from_min_max(pos2(left, plot.top()), pos2((left + w).min(plot.right()), plot.bottom())),
+                c,
+                CHANNEL_COLORS.get(k).copied().unwrap_or(Color32::GRAY),
+            )
+        })
+        .collect()
+}
+
+/// Draw the Waveform or RGB Parade of `h` in `plot` at `scale`: each column of the photo, left to right, its
+/// tones from black at the bottom to white at the top, brighter where more of the column sits.
+fn paint_waveform(p: &Painter, plot: Rect, h: &Histogram, mode: HistogramMode, scale: HistogramScale) {
+    let (cols, levels) = (Histogram::WAVE_COLS, Histogram::WAVE_LEVELS);
+    for (track, plane, color) in waveform_tracks(plot, mode) {
+        p.rect_filled(track, 2.0, Color32::from_black_alpha(65));
+        // graticule: 0, 25, 50, 75 and 100 %
+        for k in 0..=4 {
+            let y = track.bottom() - track.height() * k as f32 / 4.0;
+            p.line_segment([pos2(track.left(), y), pos2(track.right(), y)], Stroke::new(1.0, Color32::from_gray(92).gamma_multiply(0.5)));
+        }
+        // columns narrower than about a pixel and a half are drawn together, so a narrow track (the parade's)
+        // doesn't stripe
+        let group = ((1.5 * cols as f32 / track.width().max(1.0)).ceil() as usize).clamp(1, cols);
+        let drawn = cols.div_ceil(group);
+        let count = |g: usize, l: usize| (g * group..((g + 1) * group).min(cols)).map(|c| h.wave_at(plane, c, l) as f32).sum::<f32>();
+        // against the 98th percentile of the occupied cells, as the vectorscope: a flat sky doesn't hide the rest
+        let cells: Vec<f32> = (0..drawn).flat_map(|g| (0..levels).map(move |l| (g, l))).map(|(g, l)| count(g, l)).filter(|&n| n > 0.0).collect();
+        let peak = robust_peak(&cells, 0.98);
+        let (cw, lh) = (track.width() / drawn as f32, track.height() / levels as f32);
+        let mut mesh = Mesh::default();
+        for g in 0..drawn {
+            for l in 0..levels {
+                let n = count(g, l);
+                if n <= 0.0 {
+                    continue;
+                }
+                let d = scale.height(n, peak);
+                let x = track.left() + g as f32 * cw;
+                let y = track.bottom() - (l + 1) as f32 * lh;
+                push_quad(&mut mesh, Rect::from_min_size(pos2(x, y), vec2(cw, lh)), color.gamma_multiply(0.2 + 0.8 * d));
+            }
+        }
+        p.add(mesh);
+    }
+}
+
 /// Draw `h`'s distribution in `plot`, in `mode` and at `scale`.
 pub fn paint_plot(p: &Painter, plot: Rect, h: &Histogram, mode: HistogramMode, scale: HistogramScale) {
     if !(plot.width() > 1.0 && plot.height() > 1.0) {
@@ -464,6 +523,10 @@ pub fn paint_plot(p: &Painter, plot: Rect, h: &Histogram, mode: HistogramMode, s
     }
     if mode == HistogramMode::Vectorscope {
         paint_vectorscope(p, plot, h, scale);
+        return;
+    }
+    if mode.is_waveform() {
+        paint_waveform(p, plot, h, mode, scale);
         return;
     }
     let (r, g, b) = (smooth(&h.r), smooth(&h.g), smooth(&h.b));
@@ -508,7 +571,7 @@ pub fn paint_plot(p: &Painter, plot: Rect, h: &Histogram, mode: HistogramMode, s
                 stroke_curve(p, track, bins, scale, peak, Stroke::new(1.5, color));
             }
         }
-        HistogramMode::Vectorscope => {}
+        HistogramMode::Vectorscope | HistogramMode::Waveform | HistogramMode::Parade => {}
     }
 }
 

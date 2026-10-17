@@ -24,6 +24,13 @@ use lcc_preview::JobPool;
 use lcc_raster::Histogram;
 use std::sync::Arc;
 
+/// The histogram a texture keeps: the loupe's (`Main`, and the `Preview` standing in for it) with its waveform
+/// planes, which only the Histogram panel draws, every other slot without them (they are most of a histogram's
+/// size, and thumbnails are many).
+fn keep_waveform(slot: Slot, h: lcc_raster::Histogram) -> lcc_raster::Histogram {
+    if matches!(slot, Slot::Main | Slot::Preview) { h } else { h.without_waveform() }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
     Thumb(PhotoId),
@@ -1016,7 +1023,7 @@ impl Renderer {
                     t.key = r.key;
                     t.photo = r.photo;
                     t.size = [img.width, img.height];
-                    t.histogram = Some(rendered.histogram);
+                    t.histogram = Some(keep_waveform(slot, rendered.histogram));
                     t.warnings = rendered.warnings;
                     t.ms = ms;
                     t.quick = r.quick;
@@ -1030,7 +1037,7 @@ impl Renderer {
                             photo: r.photo,
                             tex,
                             size: [img.width, img.height],
-                            histogram: Some(rendered.histogram),
+                            histogram: Some(keep_waveform(slot, rendered.histogram)),
                             ms,
                             quick: r.quick,
                             pixels,

@@ -2,7 +2,7 @@
 
 - 2026-10-12: Print colour management (G15): printer ICC profile, Perceptual / Relative with black point
   compensation, Print Adjustment, 16-bit PDF output.
-> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-17 · **Change:** minor (gap 30: the histogram has its four display modes, two scales and a 2D Vectorscope, leaving only the spatial Waveform / RGB Parade scopes of issue #206) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-12 · **Last updated:** 2026-10-17 · **Change:** minor (gap 30 closed: Waveform and RGB Parade scopes) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -46,7 +46,7 @@ Hours are Opus 5.5 agent wall-clock hours (see [target-app-parity.md](target-app
 | 27 | **Windows / Linux runtime coverage**: Windows installer UI unverified on Windows (#79); GPU path proven on Apple only; the Linux riscv64 tarball (new in 0.6.0, #844) is cross-compiled and never run beyond a QEMU smoke test | ROADMAP, issues, `release.yml` | non-Mac users find bugs first | 15–30 | [hardware-parity](hardware-parity.md) |
 | 28 | **Small Classic shortcuts and keys**: rating `[` `]`, \` flag toggle, `\` filter bar, F1 help, panel keys (Tab, ⇧Tab, F5–F8) and ⌘L Enable Filters are bound (G28); Web module ⌘R / ⌘⌥P bound too; left: Develop ⇧J (meaning unverified) | [ui-parity](ui-parity.md#shortcuts) | Classic muscle memory | 4–8 | [ui-parity](ui-parity.md) |
 | 29 | **HDR merge leftovers** (LR-MERGE-HDR): AI Denoise doesn't run on merged (linear) DNGs; JPEG brackets are treated as linear (no camera response curve); every frame is held as 32-bit float, ~0.86 GB per 67 MP frame (half-float frames would halve it) | tested on Sony A7R VI brackets 2026-10-14 ([merge.md](merge.md)); Lightroom's Denoise supports HDR DNGs | HDR shooters who denoise their merges, merge JPEGs, or merge 7+ frames of high-resolution raws on 16 GB machines | 10–20 (+ denoise linear-RGB contract, gap 11) | [merge](merge.md) |
-| 30 | **No waveform or RGB parade scopes** (issue #206's remaining spatial scopes): the histogram draws an RGB overlay, a luminance curve, separated channel tracks, a chroma curve and a 2D Vectorscope (circular graticule with saturation rings, skin-tone line and primary / secondary target boxes), at a linear or a logarithmic scale, but Waveform and RGB Parade views are absent (LR-VIEW-HISTOGRAM-MODES is ✅ for the histogram and vectorscope modes) | [parity-checklist](parity-checklist.md) (LR-VIEW-HISTOGRAM-MODES), `crates/raster/src/histogram.rs` | colour graders who judge exposure spatially across the frame | 4–8 | [ui-parity](ui-parity.md) |
+| 30 | ~~**No waveform or RGB parade scopes**~~ (issue #206's remaining spatial scopes) — **closed 2026-10-17**: `view.histogram.mode` `waveform` draws the photo's luminance column by column (left to right as in the photo, black at the bottom, 0–100 % graticule) and `parade` its red, green and blue the same way in three tracks side by side, from a 128 × 64 grid per plane the render fills with the histogram (only the loupe's is kept); HDR edits read display-encoded levels, SDR white and above at the top | [parity-checklist](parity-checklist.md) (LR-VIEW-HISTOGRAM-MODES), `crates/raster/src/histogram.rs`, `crates/ui-egui/src/panels/histogram.rs` | colour graders who judge exposure spatially across the frame | 0 | [ui-parity](ui-parity.md) |
 
 Beta-blocking gaps (B) total **~220–415 h**; with the stability and platform work they need around them,
 **~330–585 h** to beta (incl. 40–80 h for the ~92 open core-path user issues) (see [target-app-parity.md](target-app-parity.md#stage)).
@@ -85,6 +85,7 @@ Beta-blocking gaps (B) total **~220–415 h**; with the stability and platform w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | minor | Gap 30 closed: Waveform and RGB Parade join the histogram's modes (`view.histogram.mode` `waveform` / `parade`), from per-column level grids the render fills with the histogram |
 | 2026-10-17 | minor | Gap 30 added: the histogram has its four 1D display modes, two scales and a 2D Vectorscope (`view.histogram.mode` / `view.histogram.scale`, issue #206), leaving only the spatial Waveform and RGB Parade scopes (4–8 h) |
 | 2026-10-15 | minor | Upstream batch 40 merged: gap 2 is now the CR3 variants no public file uses (all 110 CC0 CR3s decode; 26 bodies verified; Canon fully working 98% by the fork's re-measure), 10–25 h; gap 4's closure (already closed here 2026-10-13) added to Closed recently; the fork's gaps 23 and 28 kept |
 | 2026-10-14 | minor | Gap 26: at 100k photos stack and album lookups are indexed, so an "In a Stack" or "Album" smart album counts in ~14 ms (was 0.6–2.7 s); open time unchanged |
