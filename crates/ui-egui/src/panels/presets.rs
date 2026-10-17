@@ -65,17 +65,22 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
     let t = Tokens::get(ui.ctx());
     egui::Frame::NONE.fill(t.chrome).stroke(egui::Stroke::new(1.0, t.divider)).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
-        // The panel's own Classic header, like the Versions, History and Collections panels below
-        // it: the chevron on the left of the bar folds the list and the header's menu shows or
-        // hides the side's panels, so someone who does not use presets can give the panels below
-        // the room (issue #75). In the left column it folds under `IN_COLUMN_KEY`, a state of its
-        // own, so folding it there cannot leave the presets column (Window ▸ Presets) open and empty. The
-        // two buttons sit at the bar's right edge, as a header button does on upstream's sidebar,
-        // and the header keeps them room.
+        // The panel's own Classic header in the left column (issue #75): the chevron folds the
+        // list to give the panels below the room, folding under `IN_COLUMN_KEY` so folding there
+        // leaves the presets column (Window ▸ Presets) whole. The header keeps room for the Create and More
+        // buttons at the right (`header_inset`). Outside the left column (the presets column,
+        // Window ▸ Presets, or docking), the panel is drawn whole and does not fold, so it carries no
+        // collapse triangle (issue #238).
         let (hr, unfolded) = if in_column {
             super::classic::header_inset(app, ui, PanelId::Presets, side, IN_COLUMN_KEY, 62.0)
         } else {
-            super::classic::header(app, ui, PanelId::Presets, side)
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER_H), Sense::hover());
+            register(ui.ctx(), "panelHeader:presets", r);
+            let painter = ui.painter();
+            painter.line_segment([pos2(r.left(), r.top()), pos2(r.right(), r.top())], egui::Stroke::new(1.0, t.divider));
+            let name = crate::i18n::tr(super::classic::title(PanelId::Presets));
+            painter.text(pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, name, t.semibold(12.5), t.text);
+            (r, true)
         };
         let mut hdr = ui.new_child(
             egui::UiBuilder::new()
