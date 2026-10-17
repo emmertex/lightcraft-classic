@@ -382,11 +382,9 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
             lucide!(pen, ["M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"]);
         }
         Sliders => {
-            for (y, x) in [(5.0, 12.0), (10.0, 7.0), (15.0, 13.0)] {
-                pen.line(&[(3.0, y), (x - 2.0, y)]);
-                pen.line(&[(x + 2.0, y), (17.0, y)]);
-                pen.circle(x, y, 2.0);
-            }
+            // Lucide `sliders-horizontal`: short ticks rather than round handles, so it weighs as the other line
+            // icons do (issue #208)
+            lucide!(pen, ["M21 4h-7", "M10 4H3", "M21 12h-9", "M8 12H3", "M21 20h-5", "M12 20H3", "M14 2v4", "M8 10v4", "M16 18v4"]);
         }
         Crop => {
             // Lucide `crop`
