@@ -48,6 +48,19 @@ pub struct Filter {
     pub camera: Option<String>,
     /// Lens (case-insensitive substring).
     pub lens: Option<String>,
+    /// Any of these keywords, each matched as [`Filter::keyword`] (the filter bar's multi-select); empty = no
+    /// constraint. Together with `keyword`, both must match.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// Any of these people, each matched as [`Filter::person`]; empty = no constraint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub people: Vec<String>,
+    /// Any of these cameras, each matched as [`Filter::camera`]; empty = no constraint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<String>,
+    /// Any of these lenses, each matched as [`Filter::lens`]; empty = no constraint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lenses: Vec<String>,
     /// Capture date range, inclusive: `dateFrom` is compared as a lower bound (`2026-04-01`),
     /// `dateTo` as a prefix upper bound (`2026-04` includes all of April).
     pub date_from: Option<String>,
@@ -674,6 +687,11 @@ impl Filter {
                 v.push(format!("{name} {x}"));
             }
         }
+        for (name, list) in [("keyword", &self.keywords), ("person", &self.people), ("camera", &self.cameras), ("lens", &self.lenses)] {
+            if !list.is_empty() {
+                v.push(format!("{name} {}", list.join(" or ")));
+            }
+        }
         match (&self.date_from, &self.date_to) {
             (Some(a), Some(b)) => v.push(format!("captured {a} – {b}")),
             (Some(a), None) => v.push(format!("captured from {a}")),
@@ -844,6 +862,15 @@ impl Filter {
         }
         if let Some(fcs) = &self.faces
             && !matches_face_spec(p.face_count(), fcs)
+        {
+            return false;
+        }
+        // the multi-selects: any value of each list, every list
+        let any = |list: &[String], one: &dyn Fn(&str) -> bool| list.is_empty() || list.iter().any(|v| one(v));
+        if !any(&self.keywords, &|k| p.meta.keywords.iter().any(|x| crate::keywords::is_under(x, k)))
+            || !any(&self.people, &|n| has_person(p, n))
+            || !any(&self.cameras, &|c| p.meta.camera.eq_ignore_ascii_case(c))
+            || !any(&self.lenses, &|l| p.meta.lens.to_lowercase().contains(&l.to_lowercase()))
         {
             return false;
         }
@@ -1031,11 +1058,11 @@ impl Catalog {
         self.people_in(&Filter::default())
     }
 
-    /// [`Self::people`] among the photos `filter` lets through (its `person` is ignored): what the
+    /// [`Self::people`] among the photos `filter` lets through (its `person` and `people` are ignored): what the
     /// People view offers while other filters (a date, a rating, an album…) are active, so picking
     /// a person never ends in an empty grid.
     pub fn people_in(&self, filter: &Filter) -> Vec<Person> {
-        let filter = Filter { person: None, ..filter.clone() };
+        let filter = Filter { person: None, people: Vec::new(), ..filter.clone() };
         let mut m: std::collections::HashMap<String, (Person, f64)> = Default::default();
         let prepared = filter.prepare();
         for p in self.photos().filter(|p| filter.matches_in(p, self, &prepared)) {

@@ -16,7 +16,8 @@ fn strs(p: &Value, key: &str) -> Vec<String> {
 }
 
 /// Commit a keyword batch; returns `{changed: photos changed, listed: keyword list changes}`. The
-/// keyword filter follows a renamed keyword and is cleared when its keyword is deleted.
+/// keyword filter (and each keyword of its multi-select) follows a renamed keyword and is cleared when its
+/// keyword is deleted.
 fn commit_keywords(s: &mut Session, label: &str, op: lcc_catalog::Op, follow: impl Fn(&str) -> Option<String>) -> Result<Value> {
     use lcc_catalog::Op;
     let (photos, listed) = match &op {
@@ -32,6 +33,13 @@ fn commit_keywords(s: &mut Session, label: &str, op: lcc_catalog::Op, follow: im
     if let Some(k) = s.filter.keyword.clone() {
         s.filter.keyword = follow(&k);
     }
+    let mut kept: Vec<String> = Vec::new();
+    for k in std::mem::take(&mut s.filter.keywords).iter().filter_map(|k| follow(k)) {
+        if !kept.iter().any(|x| x.eq_ignore_ascii_case(&k)) {
+            kept.push(k);
+        }
+    }
+    s.filter.keywords = kept;
     Ok(json!({"changed": photos, "listed": listed}))
 }
 

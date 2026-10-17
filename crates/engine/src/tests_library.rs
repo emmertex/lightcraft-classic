@@ -336,6 +336,38 @@ fn filter_any_of_several_labels() {
     assert!(s.visible_cloned().len() > want);
 }
 
+/// Issue #213: the filter bar's keyword (and camera, lens) pickers take several values, any of which
+/// matches; the facets still combine. One chip clears a facet, and the list follows keyword renames.
+#[test]
+fn filter_any_of_several_keywords() {
+    use serde_json::json;
+    let mut s = crate::Session::with_demo();
+    let ids: Vec<u64> = s.catalog.photos().filter(|p| p.in_library()).take(3).map(|p| p.id.0).collect();
+    for (id, k) in ids.iter().zip(["zebra", "yak", "xerus"]) {
+        s.execute("photo.setMeta", &json!({"ids": [id], "keywords": [k]})).unwrap();
+    }
+    s.execute("library.filter", &json!({"keywords": ["zebra", "yak"]})).unwrap();
+    let mut vis: Vec<u64> = s.visible_cloned().iter().map(|id| id.0).collect();
+    vis.sort();
+    assert_eq!(vis, ids[..2].to_vec());
+    let chips = crate::filter_chips(&s.filter, &s.catalog);
+    let chip = chips.iter().find(|c| c.label.starts_with("Keyword:")).unwrap();
+    assert_eq!(chip.label, "Keyword: zebra or yak");
+    // another facet narrows the any-of list
+    let camera = s.catalog.photo(lcc_catalog::PhotoId(ids[1])).unwrap().meta.camera.clone();
+    s.execute("library.filter", &json!({"cameras": [camera]})).unwrap();
+    assert!(s.visible_cloned().iter().all(|id| s.catalog.photo(*id).unwrap().meta.keywords.iter().any(|k| k == "zebra" || k == "yak")));
+    s.execute("library.filter", &json!({"cameras": []})).unwrap();
+    // a renamed keyword stays chosen, a deleted one drops out
+    s.execute("keyword.rename", &json!({"from": "yak", "to": "Bison"})).unwrap();
+    assert_eq!(s.filter.keywords, vec!["zebra".to_string(), "Bison".to_string()]);
+    s.execute("keyword.delete", &json!({"keyword": "zebra"})).unwrap();
+    assert_eq!(s.filter.keywords, vec!["Bison".to_string()]);
+    let chip = crate::filter_chips(&s.filter, &s.catalog).into_iter().find(|c| c.label.starts_with("Keyword:")).unwrap();
+    s.execute("library.filter", &chip.clear).unwrap();
+    assert!(s.filter.keywords.is_empty() && s.filter.keyword.is_none());
+}
+
 /// Quick Collection / target album: B toggles the selection in it (created on first use);
 /// another album can be the target; clear empties it; all undoable.
 #[test]

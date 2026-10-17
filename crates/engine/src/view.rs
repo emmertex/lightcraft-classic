@@ -206,16 +206,23 @@ pub fn filter_chips(f: &Filter, cat: &Catalog) -> Vec<FilterChip> {
     if let Some(e) = f.edited {
         add(if e { "Edited".into() } else { "Unedited".into() }, json!({"edited": Null}));
     }
-    for (name, key, val) in [
-        ("Camera", "camera", &f.camera),
-        ("Lens", "lens", &f.lens),
-        ("Keyword", "keyword", &f.keyword),
-        ("Person", "person", &f.person),
-        ("Faces", "faces", &f.faces),
+    // a facet's single value and its multi-select list are one chip ("Keyword: travel or family")
+    for (name, key, list_key, val, list) in [
+        ("Camera", "camera", "cameras", &f.camera, &f.cameras),
+        ("Lens", "lens", "lenses", &f.lens, &f.lenses),
+        ("Keyword", "keyword", "keywords", &f.keyword, &f.keywords),
+        ("Person", "person", "people", &f.person, &f.people),
     ] {
-        if let Some(x) = val {
-            add(format!("{name}: {x}"), json!({key: Null}));
+        let mut values: Vec<&str> = list.iter().map(String::as_str).collect();
+        if let Some(x) = val.as_deref().filter(|x| !values.iter().any(|v| v.eq_ignore_ascii_case(x))) {
+            values.insert(0, x);
         }
+        if !values.is_empty() {
+            add(format!("{name}: {}", values.join(" or ")), json!({key: Null, list_key: []}));
+        }
+    }
+    if let Some(x) = &f.faces {
+        add(format!("Faces: {x}"), json!({"faces": Null}));
     }
     if let Some(d) = &f.date {
         add(format!("Date: {}", date_label(d)), json!({"date": Null}));

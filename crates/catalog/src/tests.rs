@@ -137,6 +137,43 @@ fn filter_search_sort() {
     assert_eq!(c.keywords(), vec![("ocean".to_string(), 1), ("summer".to_string(), 1)]);
 }
 
+/// Issue #213: several values of one facet match any of them; facets still all have to match.
+#[test]
+fn multi_choice_facets_match_any_value_and_every_facet() {
+    let mut c = Catalog::new();
+    let a = photo(&mut c, "a.jpg", "2026-05-01T10:00:00");
+    let b = photo(&mut c, "b.jpg", "2026-05-02T10:00:00");
+    let d = photo(&mut c, "d.jpg", "2026-05-03T10:00:00");
+    for (id, kw, camera, lens) in [
+        (a, "travel|italy", "Z 8", "NIKKOR Z 24-120mm f/4 S"),
+        (b, "family", "D750", "AF-S NIKKOR 50mm f/1.8G"),
+        (d, "cats", "Z 8", "NIKKOR Z 20mm f/1.8 S"),
+    ] {
+        let mut m = c.photo(id).unwrap().meta.clone();
+        m.keywords = vec![kw.into()];
+        m.camera = camera.into();
+        m.lens = lens.into();
+        c.apply(Op::SetMeta { id, meta: Box::new(m) }).unwrap();
+    }
+    let q = |f: Filter| c.query(&f, &Sort::default());
+    let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(q(Filter { keywords: strs(&["travel", "family"]), ..Default::default() }), vec![a, b], "a parent keyword finds its children");
+    assert_eq!(q(Filter { cameras: strs(&["d750", "nikon z 9"]), ..Default::default() }), vec![b]);
+    assert_eq!(q(Filter { lenses: strs(&["Z 20mm", "50mm"]), ..Default::default() }), vec![b, d]);
+    // across facets every one must match
+    assert_eq!(q(Filter { keywords: strs(&["travel", "cats"]), cameras: strs(&["Z 8"]), lenses: strs(&["24-120"]), ..Default::default() }), vec![a]);
+    // the single-value field and its list both apply
+    assert_eq!(q(Filter { camera: Some("Z 8".into()), keywords: strs(&["family", "cats"]), ..Default::default() }), vec![d]);
+    assert_eq!(q(Filter { keywords: Vec::new(), ..Default::default() }).len(), 3, "an empty list doesn't filter");
+    let f = Filter { keywords: strs(&["travel", "family"]), ..Default::default() };
+    assert!(f.describe().contains("keyword travel or family"), "{}", f.describe());
+    // older filters (no lists) read back, and empty lists aren't written
+    let json = serde_json::to_value(Filter { camera: Some("Z 8".into()), ..Default::default() }).unwrap();
+    assert!(json.get("cameras").is_none(), "{json}");
+    let back: Filter = serde_json::from_value(serde_json::json!({"keyword": "cats"})).unwrap();
+    assert!(back.keywords.is_empty() && back.keyword.as_deref() == Some("cats"));
+}
+
 /// A `captured` string that is not ASCII (the Lightroom importer copies `captureTime` into an
 /// `AddPhoto` op verbatim, and a JSON snapshot is valid UTF-8 whatever it holds) must not be
 /// sliced on a byte index in `date_groups`: grouping counts the well-formed dates and ignores
@@ -421,10 +458,11 @@ fn people_from_named_face_regions() {
         "only the rated photo's people, counted within it, spelled as first seen there"
     );
     assert_eq!(
-        names(Filter { person: Some("Sam".into()), ..rated }),
+        names(Filter { person: Some("Sam".into()), ..rated.clone() }),
         names(Filter { rating: 1, ..Default::default() }),
         "the person filter is ignored"
     );
+    assert_eq!(names(Filter { people: vec!["Sam".into()], ..rated }), names(Filter { rating: 1, ..Default::default() }), "and so is its list (#213)");
     assert_eq!(names(Filter { rating: 5, ..Default::default() }), vec![], "nobody in the filtered photos");
 }
 

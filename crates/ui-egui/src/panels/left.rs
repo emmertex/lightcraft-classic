@@ -2182,7 +2182,9 @@ fn keyword_rows(app: &mut LccApp, ui: &mut egui::Ui, nodes: &[KeywordNode], inde
 
 /// One drawn row of [`keyword_rows`]; `open_id` and `open` are its triangle's when it has rows inside it.
 fn keyword_row(app: &mut LccApp, ui: &mut egui::Ui, n: &KeywordNode, id: &str, indent: f32, open_id: Option<egui::Id>, open: &mut bool) {
-    let sel = app.session.filter.keyword.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(&n.path));
+    // chosen here or among the filter bar's keywords
+    let f = &app.session.filter;
+    let sel = f.keyword.iter().chain(&f.keywords).any(|k| k.eq_ignore_ascii_case(&n.path));
     let resp = row(app, ui, id, Icon::Tag, &n.name, Some(n.count), sel, indent);
     if let Some(k) = open_id {
         tree_toggle(ui, &resp, indent, k, open, format!("keywordToggle:{}", n.path));
@@ -2191,7 +2193,8 @@ fn keyword_row(app: &mut LccApp, ui: &mut egui::Ui, n: &KeywordNode, id: &str, i
     if resp.clicked() {
         let v = if sel { serde_json::Value::Null } else { json!(n.path) };
         browse_all_photos(app, !sel);
-        let _ = app.run("library.filter", json!({"keyword": v}));
+        // the Keyword List shows one keyword: it replaces the filter bar's several
+        let _ = app.run("library.filter", json!({"keyword": v, "keywords": []}));
     }
     resp.context_menu(|ui| {
         let has_sel = app.session.active().is_some();

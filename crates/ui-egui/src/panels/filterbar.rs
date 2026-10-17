@@ -1,5 +1,6 @@
 //! The library filter bar above the grid: rating (≥ / = / ≤), flags, colour labels, kind,
-//! edited state and camera / lens / keyword pickers — every control drives `library.filter`.
+//! edited state and camera / lens / keyword pickers (several values each, any of which matches) — every
+//! control drives `library.filter`.
 //! "Save as Smart Album…" keeps the current view as a live album; "Clear" resets the filter.
 
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, vec2};
@@ -70,9 +71,13 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, id: &str, current: &str, active: 
     }
     let mut chosen = None;
     let searchable = matches!(id, "camera" | "lens" | "keyword");
+    // the metadata pickers take several values (issue #213): a click toggles one and the list stays open
+    let multi = searchable;
     // the search text of this picker alone; `None` until the dropdown opens, cleared when it closes
     let key = egui::Id::new(("filterSearch", id));
-    let opened = egui::Popup::menu(&r).show(|ui| {
+    let close = if multi { egui::PopupCloseBehavior::CloseOnClickOutside } else { egui::PopupCloseBehavior::CloseOnClick };
+    // a stable id: the button's own comes from its place, which moves when the chips row appears after a pick
+    let opened = egui::Popup::menu(&r).id(egui::Id::new(("filterPicker", id))).close_behavior(close).show(|ui| {
         let mut query = String::new();
         if searchable {
             let previous: Option<String> = ui.data(|d| d.get_temp(key));
@@ -95,8 +100,8 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, id: &str, current: &str, active: 
         let needle = query.to_lowercase();
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for (n, (label, patch, sel)) in items.iter().enumerate() {
-                // the "Any …" row (a null patch) always stays
-                let any = patch.get(id).is_none_or(Value::is_null);
+                // the "Any …" row (a patch that only clears: nulls and empty lists) always stays
+                let any = patch.as_object().is_none_or(|o| o.values().all(|v| v.is_null() || v.as_array().is_some_and(Vec::is_empty)));
                 if searchable && !any && !needle.is_empty() && !label.to_lowercase().contains(&needle) {
                     continue;
                 }
@@ -104,6 +109,10 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, id: &str, current: &str, active: 
                 register(ui.ctx(), format!("filterItem:{id}:{n}"), resp.rect);
                 if resp.clicked() {
                     chosen = Some(patch.clone());
+                    // "Any …" clears the choice: nothing more to pick
+                    if multi && any {
+                        ui.close();
+                    }
                 }
             }
         });
@@ -114,6 +123,18 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, id: &str, current: &str, active: 
     if let Some(p) = chosen {
         filter(app, p);
     }
+}
+
+/// The values a metadata picker has chosen: its multi-select list, and the single value (set from elsewhere)
+/// first when the list doesn't hold it.
+fn chosen_values(single: Option<&str>, list: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for v in single.into_iter().chain(list.iter().map(String::as_str)) {
+        if !out.iter().any(|x| x.eq_ignore_ascii_case(v)) {
+            out.push(v.to_string());
+        }
+    }
+    out
 }
 
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
@@ -305,16 +326,30 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let ui: &mut egui::Ui = if two_rows { &mut row2 } else { &mut row1 };
     let values = app.caches.filter_values(&app.session.catalog);
     let (cameras, lenses, keywords) = (values.cameras.clone(), values.lenses.clone(), values.keywords.clone());
-    for (id, key, all_label, current, values) in [
-        ("camera", "camera", "Camera", f.camera.clone(), cameras),
-        ("lens", "lens", "Lens", f.lens.clone(), lenses),
-        ("keyword", "keyword", "Keyword", f.keyword.clone(), keywords),
+    // several values of one picker show any of them (issue #213); a value set elsewhere (the Keyword List
+    // in the sidebar sets one keyword) counts as chosen, and the first toggle here moves it into the list
+    for (id, key, list_key, all_label, current, list, values) in [
+        ("camera", "camera", "cameras", "Camera", f.camera.clone(), f.cameras.clone(), cameras),
+        ("lens", "lens", "lenses", "Lens", f.lens.clone(), f.lenses.clone(), lenses),
+        ("keyword", "keyword", "keywords", "Keyword", f.keyword.clone(), f.keywords.clone(), keywords),
     ] {
-        let mut items = vec![(format!("Any {}", all_label.to_lowercase()), json!({key: Value::Null}), current.is_none())];
-        items.extend(values.into_iter().map(|v| (v.clone(), json!({key: v.clone()}), current.as_deref() == Some(v.as_str()))));
-        let shown = current.clone().unwrap_or_else(|| all_label.to_string());
+        let chosen = chosen_values(current.as_deref(), &list);
+        let is_on = |v: &str| chosen.iter().any(|c| c.eq_ignore_ascii_case(v));
+        let mut items = vec![(format!("Any {}", all_label.to_lowercase()), json!({key: Value::Null, list_key: []}), chosen.is_empty())];
+        items.extend(values.into_iter().map(|v| {
+            let on = is_on(&v);
+            let next: Vec<&String> =
+                if on { chosen.iter().filter(|c| !c.eq_ignore_ascii_case(&v)).collect() } else { chosen.iter().chain([&v]).collect() };
+            let patch = json!({key: Value::Null, list_key: next});
+            (v, patch, on)
+        }));
+        let shown = match chosen.as_slice() {
+            [] => all_label.to_string(),
+            [one] => one.clone(),
+            [first, rest @ ..] => format!("{first} +{}", rest.len()),
+        };
         let shown = if shown.chars().count() > 22 { format!("{}…", shown.chars().take(21).collect::<String>()) } else { shown };
-        picker(app, ui, id, &shown, current.is_some(), items);
+        picker(app, ui, id, &shown, !chosen.is_empty(), items);
     }
 
     // faces picker: detected face boxes, named or not (`faces` in `library.filter`)

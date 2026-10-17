@@ -2062,7 +2062,7 @@ impl Caches {
     /// The people named on faces among the photos the filter lets through (its own `person` aside),
     /// with photo counts.
     pub fn people(&mut self, cat: &lcc_catalog::Catalog, filter: &lcc_catalog::Filter) -> std::sync::Arc<Vec<lcc_catalog::Person>> {
-        let key = lcc_catalog::Filter { person: None, ..filter.clone() };
+        let key = lcc_catalog::Filter { person: None, people: Vec::new(), ..filter.clone() };
         match &self.people {
             Some((r, f, t)) if *r == cat.revision && *f == key => t.clone(),
             _ => {

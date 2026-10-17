@@ -50,3 +50,33 @@ fn typing_narrows_the_keyword_rows_and_keeps_any() {
     let cameras = h.app.caches.filter_values(&h.app.session.catalog).cameras.len();
     assert_eq!(rows(&h, "camera").len(), cameras + 1, "the camera picker isn't filtered by the keyword search");
 }
+
+/// Issue #213: the keyword picker takes several keywords. It stays open while they are clicked, shows any of them,
+/// and "Any keyword" clears them all.
+#[test]
+fn the_keyword_picker_takes_several_keywords() {
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1600.0, 1000.0], 1.0);
+    h.app.ui.view = crate::state::ViewMode::PhotoGrid;
+    h.app.ui.filter_bar = true;
+    h.settle(SETTLE);
+    let keywords = h.app.caches.filter_values(&h.app.session.catalog).keywords.clone();
+    assert!(keywords.len() >= 2, "the demo library has keywords: {keywords:?}");
+    let all = h.app.session.visible_cloned().len();
+    ok(&mut h, "ui.clickWidget", json!({"id": "dropdown:filter-keyword"}));
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:1"}));
+    assert_eq!(h.app.session.filter.keywords, vec![keywords[0].clone()]);
+    let one = h.app.session.visible_cloned().len();
+    assert!(rows(&h, "keyword").len() > 1, "the list stays open for another keyword");
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:2"}));
+    assert_eq!(h.app.session.filter.keywords, vec![keywords[0].clone(), keywords[1].clone()]);
+    let two = h.app.session.visible_cloned().len();
+    assert!(one <= two && two <= all, "any of them: {one} ≤ {two} ≤ {all}");
+    // a second click takes one off again
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:1"}));
+    assert_eq!(h.app.session.filter.keywords, vec![keywords[1].clone()]);
+    ok(&mut h, "ui.clickWidget", json!({"id": "filterItem:keyword:0"}));
+    assert!(h.app.session.filter.keywords.is_empty() && h.app.session.filter.keyword.is_none());
+    assert_eq!(h.app.session.visible_cloned().len(), all);
+    assert!(rows(&h, "keyword").is_empty(), "Any keyword closes the list");
+}
