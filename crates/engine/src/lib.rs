@@ -1274,7 +1274,7 @@ impl Session {
     }
 
     /// `source` as a filter over `base` (the filter bar's, or none), with the folder it shows.
-    fn view_filter(&self, source: LibrarySource, base: &Filter) -> Filter {
+    pub(crate) fn view_filter(&self, source: LibrarySource, base: &Filter) -> Filter {
         let mut f = source.to_filter(base, &self.catalog);
         if source == LibrarySource::Folder {
             // no folder chosen: nothing (an empty path matches nothing)
@@ -1472,6 +1472,8 @@ mod tests_face_recognize;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_face_tiles;
+#[cfg(test)]
+mod tests_facets;
 #[cfg(test)]
 mod tests_filesystem_history;
 #[cfg(all(test, not(target_arch = "wasm32")))]

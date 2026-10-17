@@ -26,6 +26,7 @@ mod export;
 pub(crate) mod face_detect;
 mod face_models;
 mod face_recognize;
+pub(crate) mod facets;
 pub mod filters;
 mod focus;
 pub mod folders;
@@ -229,6 +230,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(convert::edit_specs());
         v.extend(merge::specs());
         v.extend(query::specs());
+        v.extend(facets::specs());
         v.extend(quick::specs());
         v.extend(xmp::specs());
         #[cfg(not(target_arch = "wasm32"))]
