@@ -460,29 +460,31 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     }
-    if !app.session.metadata_presets.is_empty() {
-        row(ui, t, crate::i18n::tr("Metadata preset"), |ui| {
-            let cur = d.metadata_preset.clone();
-            let mut pick = None;
-            let r = crate::widgets::combo_box("settingsMetaPreset")
-                .width(240.0)
-                .selected_text(cur.clone().unwrap_or_else(|| crate::i18n::tr("None").into()))
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(cur.is_none(), crate::i18n::tr("None")).clicked() {
-                        pick = Some(String::new());
+    row(ui, t, crate::i18n::tr("Metadata preset"), |ui| {
+        let cur = d.metadata_preset.clone();
+        let mut pick = None;
+        let r = crate::widgets::combo_box("settingsMetaPreset")
+            .width(240.0)
+            .selected_text(cur.clone().unwrap_or_else(|| crate::i18n::tr("None").into()))
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(cur.is_none(), crate::i18n::tr("None")).clicked() {
+                    pick = Some(String::new());
+                }
+                for m in &app.session.metadata_presets {
+                    if ui.selectable_label(cur.as_deref() == Some(m.name.as_str()), &m.name).clicked() {
+                        pick = Some(m.name.clone());
                     }
-                    for m in &app.session.metadata_presets {
-                        if ui.selectable_label(cur.as_deref() == Some(m.name.as_str()), &m.name).clicked() {
-                            pick = Some(m.name.clone());
-                        }
-                    }
-                });
-            register(ui.ctx(), "combo:settingsMetaPreset", r.response.rect);
-            if let Some(n) = pick {
-                let _ = app.run("library.preferences", json!({"import": {"metadataPreset": n}}));
-            }
-        });
-    }
+                }
+                ui.separator();
+                if ui.button(crate::i18n::tr("Import Presets…")).clicked() {
+                    let _ = app.run("file.importPresets", json!({}));
+                }
+            });
+        register(ui.ctx(), "combo:settingsMetaPreset", r.response.rect);
+        if let Some(n) = pick {
+            let _ = app.run("library.preferences", json!({"import": {"metadataPreset": n}}));
+        }
+    });
     heading(ui, t, crate::i18n::tr("XMP sidecars"));
     let mut xmp = app.session.xmp;
     if check(ui, "settings.autoWriteXmp", &mut xmp.auto_write, "Automatically write changes into XMP sidecars") {

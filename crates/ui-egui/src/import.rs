@@ -79,6 +79,15 @@ pub struct ImportDialog {
     pub rename: String,
     /// Metadata preset name ("" = none).
     pub metadata_preset: String,
+    /// When true, an inline creator for a new metadata preset is shown.
+    #[serde(default)]
+    pub creating_meta_preset: bool,
+    #[serde(default)]
+    pub new_meta_name: String,
+    #[serde(default)]
+    pub new_meta_creator: String,
+    #[serde(default)]
+    pub new_meta_copyright: String,
     /// Copy: raws are copied as DNG.
     pub dng: bool,
     /// Per candidate: the library already has it in Recently Deleted ([`ImportDialog::set_trashed`]).
@@ -642,6 +651,11 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
     // only an album the review offers (it may have been deleted while the scan ran)
     d.album = task.album.filter(|id| app.session.catalog.album(lcc_catalog::AlbumId(*id)).is_some_and(|a| !a.folder && !a.is_smart()));
     d.sources = task.sources;
+    if let Some(mp) = &app.session.import_defaults.metadata_preset
+        && app.session.metadata_presets.iter().any(|m| m.name.eq_ignore_ascii_case(mp))
+    {
+        d.metadata_preset = mp.clone();
+    }
     app.ui.dialog = Some(crate::state::Dialog::Import { opts: Box::new(d) });
 }
 
@@ -687,8 +701,27 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
     if !d.preset.is_empty() {
         params["preset"] = json!(d.preset);
     }
-    if !d.metadata_preset.is_empty() {
-        params["metadataPreset"] = json!(d.metadata_preset);
+    let mut meta_preset = d.metadata_preset.clone();
+    if d.creating_meta_preset && !d.new_meta_name.trim().is_empty() {
+        let name = d.new_meta_name.trim().to_string();
+        let mut fields = serde_json::Map::new();
+        if !d.new_meta_creator.trim().is_empty() {
+            fields.insert("creator".into(), json!(d.new_meta_creator.trim()));
+        }
+        if !d.new_meta_copyright.trim().is_empty() {
+            fields.insert("copyright".into(), json!(d.new_meta_copyright.trim()));
+        }
+        let _ = app.session.execute(
+            "metadata.savePreset",
+            &json!({
+                "name": name,
+                "fields": fields,
+            }),
+        );
+        meta_preset = name;
+    }
+    if !meta_preset.is_empty() {
+        params["metadataPreset"] = json!(meta_preset);
     }
     if d.copy {
         if !d.destination.trim().is_empty() {
@@ -1344,21 +1377,110 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             }
         });
     });
-    if !app.session.metadata_presets.is_empty() {
-        field(ui, "Metadata", |ui| {
-            let cur = if d.metadata_preset.is_empty() { crate::i18n::tr("None").to_string() } else { d.metadata_preset.clone() };
-            crate::widgets::combo_box("import-metadata").selected_text(cur).show_ui(ui, |ui| {
-                if ui.selectable_label(d.metadata_preset.is_empty(), crate::i18n::tr("None")).clicked() {
-                    d.metadata_preset.clear();
-                }
-                for m in &app.session.metadata_presets {
-                    if ui.selectable_label(d.metadata_preset == m.name, &m.name).clicked() {
-                        d.metadata_preset = m.name.clone();
+    field(ui, "Metadata", |ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                let cur = if d.creating_meta_preset {
+                    crate::i18n::tr("New preset…").to_string()
+                } else if d.metadata_preset.is_empty() {
+                    crate::i18n::tr("None").to_string()
+                } else {
+                    d.metadata_preset.clone()
+                };
+                let combo = crate::widgets::combo_box("import-metadata").selected_text(cur).height(300.0).show_ui(ui, |ui| {
+                    let none_btn = ui.selectable_label(!d.creating_meta_preset && d.metadata_preset.is_empty(), crate::i18n::tr("None"));
+                    register(ui.ctx(), "button:importMetaNone", none_btn.rect);
+                    if none_btn.clicked() {
+                        d.metadata_preset.clear();
+                        d.creating_meta_preset = false;
                     }
-                }
+                    for m in &app.session.metadata_presets {
+                        let r = ui.selectable_label(!d.creating_meta_preset && d.metadata_preset == m.name, &m.name);
+                        register(ui.ctx(), format!("button:importMetaPreset-{}", m.name), r.rect);
+                        if r.clicked() {
+                            d.metadata_preset = m.name.clone();
+                            d.creating_meta_preset = false;
+                        }
+                    }
+                    ui.separator();
+                    let new_btn = ui.selectable_label(d.creating_meta_preset, crate::i18n::tr("New Preset…"));
+                    register(ui.ctx(), "button:importMetaNewPreset", new_btn.rect);
+                    if new_btn.clicked() {
+                        d.creating_meta_preset = true;
+                        if d.new_meta_creator.is_empty() {
+                            d.new_meta_creator = app.session.import_defaults.creator.clone();
+                        }
+                        if d.new_meta_copyright.is_empty() {
+                            d.new_meta_copyright = app.session.import_defaults.copyright.clone();
+                        }
+                    }
+                    let import_btn = ui.button(crate::i18n::tr("Import Presets…"));
+                    register(ui.ctx(), "button:importMetaImportPresets", import_btn.rect);
+                    if import_btn.clicked() {
+                        let _ = app.run("file.importPresets", json!({}));
+                    }
+                });
+                register(ui.ctx(), "combo:importMetadata", combo.response.rect);
             });
+            if d.creating_meta_preset {
+                ui.add_space(3.0);
+                let t = Tokens::get(ui.ctx());
+                egui::Frame::new().fill(t.inset).inner_margin(egui::Margin::symmetric(8, 6)).corner_radius(4.0).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(crate::i18n::tr("Preset Name:")).color(t.text_dim).small());
+                            let r = ui
+                                .add(egui::TextEdit::singleline(&mut d.new_meta_name).hint_text(crate::i18n::tr("Preset name")).desired_width(180.0));
+                            register(ui.ctx(), "field:importMetaPresetName", r.rect);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(crate::i18n::tr("Creator:")).color(t.text_dim).small());
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut d.new_meta_creator).hint_text(crate::i18n::tr("Creator name")).desired_width(180.0),
+                            );
+                            register(ui.ctx(), "field:importMetaPresetCreator", r.rect);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(crate::i18n::tr("Copyright:")).color(t.text_dim).small());
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut d.new_meta_copyright).hint_text(crate::i18n::tr("© Year Name")).desired_width(180.0),
+                            );
+                            register(ui.ctx(), "field:importMetaPresetCopyright", r.rect);
+                        });
+                        ui.horizontal(|ui| {
+                            let can_save = !d.new_meta_name.trim().is_empty();
+                            let save_btn = ui.add_enabled(can_save, egui::Button::new(crate::i18n::tr("Save Preset")));
+                            register(ui.ctx(), "button:importMetaPresetSave", save_btn.rect);
+                            if save_btn.clicked() {
+                                let name = d.new_meta_name.trim().to_string();
+                                let mut fields = serde_json::Map::new();
+                                if !d.new_meta_creator.trim().is_empty() {
+                                    fields.insert("creator".into(), json!(d.new_meta_creator.trim()));
+                                }
+                                if !d.new_meta_copyright.trim().is_empty() {
+                                    fields.insert("copyright".into(), json!(d.new_meta_copyright.trim()));
+                                }
+                                let _ = app.session.execute(
+                                    "metadata.savePreset",
+                                    &json!({
+                                        "name": name,
+                                        "fields": fields,
+                                    }),
+                                );
+                                d.metadata_preset = name;
+                                d.creating_meta_preset = false;
+                            }
+                            let cancel_btn = ui.button(crate::i18n::tr("Cancel"));
+                            register(ui.ctx(), "button:importMetaPresetCancel", cancel_btn.rect);
+                            if cancel_btn.clicked() {
+                                d.creating_meta_preset = false;
+                            }
+                        });
+                    });
+                });
+            }
         });
-    }
+    });
     field(ui, "Keywords", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut d.keywords).hint_text(crate::i18n::tr("comma, separated")).desired_width(f32::INFINITY));
         register(ui.ctx(), "field:importKeywords", r.rect);
