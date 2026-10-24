@@ -122,19 +122,16 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
                 .max_rect(Rect::from_min_max(pos2(hr.right() - 80.0, hr.top()), hr.right_bottom()))
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
-        let plus = icon_button(
-            &mut hdr,
-            "presetCreate",
-            Icon::Plus,
-            vec2(26.0, 22.0),
-            false,
-            app.session.active().is_some(),
-            crate::i18n::tr("Create Preset…"),
-        );
+        let plus = icon_button(&mut hdr, "presetCreate", Icon::Plus, vec2(26.0, 22.0), false, true, crate::i18n::tr("Create Preset or Folder"));
         register(ui.ctx(), "icon:presetCreate", plus.rect);
-        if plus.clicked() {
-            app.ui.dialog = Some(crate::state::Dialog::create_preset());
-        }
+        egui::Popup::menu(&plus).show(|ui| {
+            if ui.add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Create Preset…"))).clicked() {
+                app.ui.dialog = Some(crate::state::Dialog::create_preset());
+            }
+            if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
+                app.ui.dialog = Some(crate::state::Dialog::create_preset_folder(None));
+            }
+        });
         let more = icon_button(&mut hdr, "presetMore", Icon::More, vec2(26.0, 22.0), false, true, crate::i18n::tr("More preset options"));
         register(ui.ctx(), "icon:presetMore", more.rect);
         egui::Popup::menu(&more).show(|ui| {
@@ -195,148 +192,72 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
         let thumbs = app.ui.preset_thumbs && active.is_some();
         let row_h = if thumbs { 54.0 } else { 26.0 };
-        let groups = grouped(ui.ctx(), &app.session.presets);
+        let groups = grouped(ui.ctx(), &app.session.presets, &app.session.preset_folders);
+        let mut all_user_folders = Vec::new();
+        collect_all_user_folders(&groups, &mut all_user_folders);
+        all_user_folders.sort();
+
         let scroll = egui::ScrollArea::vertical().id_salt("presets-scroll").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            // Only the rows in view are laid out, drawn and given thumbnails: a Lightroom collection
-            // imported whole is 10 000+ presets, and building every row each frame took seconds.
             let visible = ui.clip_rect().expand(row_h);
-            for grp in groups.iter() {
-                let (g, builtin, favorites) = (grp.name.clone(), grp.builtin, grp.favorites);
-                // (a user group may be named "Favorites" too: the favourites group has a key of its own)
-                let key = if favorites { "presetFavorites".to_string() } else { format!("preset:{g}") };
-                let holds_current = grp.items.iter().any(|&i| {
-                    app.session
-                        .presets
-                        .get(i)
-                        .is_some_and(|p| last.as_ref().is_some_and(|l| p.id == l.id) || marked.as_deref() == Some(p.id.as_str()))
-                });
-                // the Favorites group starts open: it is there to be reached at once
-                let open = app.ui.group_is_open(&key, holds_current || favorites);
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-                let label = if favorites { crate::i18n::tr("Favorites") } else { crate::i18n::builtin_label(&g, builtin) };
-                crate::widgets::announce(&resp, label.to_string());
-                register(ui.ctx(), if favorites { "presetFavorites".to_string() } else { format!("presetGroup:{g}") }, r);
-                paint(
-                    ui.painter(),
-                    Rect::from_center_size(pos2(r.left() + 22.0, r.center().y), vec2(16.0, 16.0)),
-                    if open { Icon::ChevronDown } else { Icon::ChevronRight },
-                    t.text_label,
-                );
-                ui.painter().text(pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, label, t.semibold(13.0), t.text_label);
-                if resp.clicked() {
-                    app.ui.group_open.insert(key, !open);
-                }
-                if !favorites {
-                    crate::widgets::context_menu(&resp, |ui| {
-                        if ui.button(crate::i18n::tr("Export Group…")).clicked() {
-                            let _ = app.run("file.exportPresets", json!({"group": g}));
-                        }
-                    });
-                }
-                if !open {
-                    continue;
-                }
-                let (first, end) = rows_in_view(ui.cursor().top(), row_h, grp.items.len(), visible);
-                if first > 0 {
-                    ui.allocate_space(vec2(ui.available_width(), first as f32 * row_h));
-                }
-                for &i in grp.items.get(first..end).unwrap_or_default() {
-                    let Some(pr) = app.session.presets.get(i).cloned() else { continue };
-                    let (pid, name, fav) = (pr.id.clone(), crate::i18n::builtin_label(&pr.name, pr.builtin).to_string(), pr.favorite);
-                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-                    crate::widgets::announce(&resp, name.clone());
-                    register(ui.ctx(), if favorites { format!("presetFav:{pid}") } else { format!("preset:{pid}") }, r);
-                    let is_last = marked.as_deref() == Some(pid.as_str());
-                    if is_last {
-                        register(ui.ctx(), "presetApplied", r);
-                        ui.painter().rect_filled(r, 0.0, t.tool_active);
-                    } else if resp.hovered() {
-                        ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.7));
-                    }
-                    let look = if thumbs || resp.hovered() { current.as_ref().map(|d| pr.apply(d, 1.0)) } else { None };
-                    let mut text_x = r.left() + 40.0;
-                    if thumbs && let (Some(id), Some(s)) = (active, look.as_ref()) {
-                        let tr = Rect::from_min_size(pos2(r.left() + 36.0, r.top() + 5.0), vec2(66.0, row_h - 10.0));
-                        ui.painter().rect_filled(tr, 2.0, t.canvas);
-                        if let Some(job) = app.session.variant_job(id, s, THUMB_EDGE)
-                            && let Some(tex) = app.renderer.variant(job)
-                        {
-                            ui.painter().image(tex.tex.id(), tr, cover_uv(tr, tex.size), Color32::WHITE);
-                        }
-                        text_x = tr.right() + 10.0;
-                    }
-                    ui.painter().text(pos2(text_x, r.center().y), Align2::LEFT_CENTER, &name, t.font(13.0), t.text_label);
-                    if fav {
-                        paint(ui.painter(), Rect::from_center_size(pos2(r.right() - 20.0, r.center().y), vec2(16.0, 16.0)), Icon::StarFilled, t.star);
-                    }
-                    // resting on a preset previews it in the loupe (no history entry)
-                    if resp.hovered()
-                        && let Some(s) = look
-                    {
-                        let label = crate::i18n::tr_format!("Preset: {name}", name = name);
-                        app.hover_preview = Some(HoverPreview { label: label.clone(), settings: s });
-                        if let Some(id) = active {
-                            ui.data_mut(|d| d.insert_temp(egui::Id::new("last-preset-hover"), (id, pr.clone(), label)));
-                        }
-                    }
-                    if resp.clicked() && app.run("preset.apply", json!({"id": pid, "amount": 100})).is_ok() {
-                        AppliedByPhoto::remember(ui.ctx(), &app.session, &pid);
-                        ui.data_mut(|d| d.insert_temp(amt_id, AppliedPreset::new(&app.session, pid.clone(), 100.0)));
-                        ui.data_mut(|d| d.remove::<(lcc_catalog::PhotoId, Preset, String)>(egui::Id::new("last-preset-hover")));
-                        app.toast(ui.ctx(), crate::i18n::tr_format!("Preset: {name}", name = name));
-                    }
-                    let (builtin, group) = (pr.builtin, pr.group.clone());
-                    crate::widgets::context_menu(&resp, |ui| {
-                        if ui.button(crate::i18n::tr(if fav { "Remove from Favorites" } else { "Add to Favorites" })).clicked() {
-                            let _ = app.run("preset.favorite", json!({"id": pid}));
-                        }
-                        if builtin {
-                            return;
-                        }
-                        ui.separator();
-                        if ui
-                            .add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Update with Current Settings")))
-                            .clicked()
-                        {
-                            match app.run("preset.update", json!({"id": pid})) {
-                                Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Updated “{name}”", name = name)),
-                                Err(e) => app.toast(ui.ctx(), e),
-                            }
-                        }
-                        if ui.button(crate::i18n::tr("Rename…")).clicked() {
-                            crate::panels::dialogs::prompt(app, "Rename Preset", "Preset name", &name, "preset.rename", json!({"id": pid}), "name");
-                        }
-                        crate::widgets::menu_button(ui, crate::i18n::tr("Move to Group"), |ui| {
-                            for g in groups.iter().filter(|x| x.user && x.name != group).map(|x| &x.name) {
-                                if ui.button(g).clicked() {
-                                    let _ = app.run("preset.move", json!({"id": pid, "group": g}));
-                                }
-                            }
-                            if ui.button(crate::i18n::tr("New Group…")).clicked() {
-                                crate::panels::dialogs::prompt(
-                                    app,
-                                    "Move Preset to New Group",
-                                    "Group name",
-                                    "",
-                                    "preset.move",
-                                    json!({"id": pid}),
-                                    "group",
-                                );
-                            }
-                        });
-                        ui.separator();
-                        if ui.button(crate::i18n::tr("Delete Preset")).clicked() {
-                            let _ = app.run("preset.delete", json!({"id": pid}));
-                        }
-                    });
-                }
-                if end < grp.items.len() {
-                    ui.allocate_space(vec2(ui.available_width(), (grp.items.len() - end) as f32 * row_h));
+            for node in groups.iter() {
+                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, &current, thumbs, amt_id);
+            }
+            let (space_r, space_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+            if let Some(dragged) = app.ui.dragging_preset_group.as_ref()
+                && space_resp.hovered()
+            {
+                ui.painter().rect_stroke(space_r.shrink(1.0), 2.0, egui::Stroke::new(1.5, t.tool_active), egui::StrokeKind::Inside);
+                if ui.input(|i| i.pointer.any_released()) {
+                    let _ = app.run("preset.moveGroup", json!({"group": dragged, "parent": null}));
+                    app.ui.dragging_preset_group = None;
                 }
             }
+            crate::widgets::context_menu(&space_resp, |ui| {
+                if ui.button(crate::i18n::tr("Create Preset…")).clicked() {
+                    app.ui.dialog = Some(crate::state::Dialog::create_preset());
+                }
+                if ui.button(crate::i18n::tr("Create Folder…")).clicked() {
+                    app.ui.dialog = Some(crate::state::Dialog::create_preset_folder(None));
+                }
+            });
             ui.add_space(30.0);
         });
+
+        // Drop cancelled or ended anywhere
+        if ui.input(|i| i.pointer.any_released()) {
+            app.ui.dragging_preset = None;
+            app.ui.dragging_preset_group = None;
+        }
+
+        // Drag feedback tooltip
+        if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+            if let Some(pid) = app.ui.dragging_preset.as_ref() {
+                if let Some(pr) = app.session.presets.iter().find(|p| &p.id == pid) {
+                    egui::Area::new(egui::Id::new("drag-preset"))
+                        .order(egui::Order::Tooltip)
+                        .interactable(false)
+                        .fixed_pos(pos + vec2(14.0, 10.0))
+                        .show(ui.ctx(), |ui| {
+                            let t = Tokens::get(ui.ctx());
+                            egui::Frame::popup(ui.style()).fill(t.chrome).show(ui, |ui| {
+                                ui.label(&pr.name);
+                            });
+                        });
+                }
+            } else if let Some(grp) = app.ui.dragging_preset_group.as_ref() {
+                egui::Area::new(egui::Id::new("drag-preset-group"))
+                    .order(egui::Order::Tooltip)
+                    .interactable(false)
+                    .fixed_pos(pos + vec2(14.0, 10.0))
+                    .show(ui.ctx(), |ui| {
+                        let t = Tokens::get(ui.ctx());
+                        egui::Frame::popup(ui.style()).fill(t.chrome).show(ui, |ui| {
+                            ui.label(grp.rsplit_once('/').map(|(_, l)| l).unwrap_or(grp));
+                        });
+                    });
+            }
+        }
         let last_hover_id = egui::Id::new("last-preset-hover");
         let pointer_in_scroll = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|pos| scroll.inner_rect.contains(pos));
         if pointer_in_scroll {
@@ -353,48 +274,333 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
     });
 }
 
-/// A preset group as the panel lists it: indices into the session's presets.
-struct Group {
-    name: String,
-    /// Holds a stock preset: a stock group (shown in the UI language), even when user presets
-    /// share its name; a group of user presets keeps its name.
-    builtin: bool,
-    /// Holds a user preset (a Move to Group target).
-    user: bool,
-    /// The starred presets, listed again above the groups.
-    favorites: bool,
-    items: Vec<usize>,
+/// A preset folder / group node in the hierarchy.
+#[derive(Clone, Debug)]
+pub struct FolderNode {
+    pub name: String,
+    pub path: String,
+    pub builtin: bool,
+    pub user: bool,
+    pub favorites: bool,
+    pub depth: usize,
+    pub items: Vec<usize>,
+    pub children: Vec<FolderNode>,
 }
 
-/// The presets by group (groups sorted by name, presets in list order) after a Favorites group of
-/// the starred ones in the same order, if any; rebuilt only when the list changed (its
-/// generation).
-fn grouped(ctx: &egui::Context, presets: &PresetList) -> Arc<Vec<Group>> {
+fn holds_current_preset(node: &FolderNode, app: &LccApp, last_id: Option<&str>, marked_id: Option<&str>) -> bool {
+    let matches = |id: &str| last_id == Some(id) || marked_id == Some(id);
+    let has_item = node.items.iter().any(|&i| app.session.presets.get(i).is_some_and(|p| matches(&p.id)));
+    has_item || node.children.iter().any(|c| holds_current_preset(c, app, last_id, marked_id))
+}
+
+fn collect_all_user_folders(nodes: &[FolderNode], out: &mut Vec<String>) {
+    for n in nodes {
+        if n.user && !n.builtin && !n.favorites && !out.contains(&n.path) {
+            out.push(n.path.clone());
+        }
+        collect_all_user_folders(&n.children, out);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_folder_node(
+    app: &mut LccApp,
+    ui: &mut egui::Ui,
+    node: &FolderNode,
+    all_user_folders: &[String],
+    row_h: f32,
+    visible: Rect,
+    last: &Option<AppliedPreset>,
+    marked: &Option<String>,
+    current: &Option<lcc_develop::DevelopSettings>,
+    thumbs: bool,
+    amt_id: egui::Id,
+) {
+    let t = Tokens::get(ui.ctx());
+    let (path, name, builtin, favorites) = (node.path.clone(), node.name.clone(), node.builtin, node.favorites);
+    let key = if favorites { "presetFavorites".to_string() } else { format!("preset:{path}") };
+    let holds_current = holds_current_preset(node, app, last.as_ref().map(|l| l.id.as_str()), marked.as_deref());
+    let open = app.ui.group_is_open(&key, holds_current || favorites);
+    let indent = node.depth as f32 * 14.0;
+
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click_and_drag());
+    let label = if favorites { crate::i18n::tr("Favorites") } else { crate::i18n::builtin_label(&name, builtin && node.depth == 0) };
+    crate::widgets::announce(&resp, label.to_string());
+    register(ui.ctx(), if favorites { "presetFavorites".to_string() } else { format!("presetGroup:{path}") }, r);
+
+    let is_drop_target = (app.ui.dragging_preset.is_some()
+        || app.ui.dragging_preset_group.as_ref().is_some_and(|g| g != &path && !path.starts_with(&format!("{g}/"))))
+        && resp.hovered();
+
+    if is_drop_target {
+        ui.painter().rect_stroke(r.shrink(1.0), 2.0, egui::Stroke::new(1.5, t.tool_active), egui::StrokeKind::Inside);
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some(dragged_pid) = app.ui.dragging_preset.take() {
+                let _ = app.run("preset.move", json!({"id": dragged_pid, "group": path}));
+            } else if let Some(dragged_grp) = app.ui.dragging_preset_group.take() {
+                let _ = app.run("preset.moveGroup", json!({"group": dragged_grp, "parent": path}));
+            }
+        }
+    } else if resp.hovered() {
+        ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.4));
+    }
+
+    if resp.drag_started() && node.user && !builtin && !favorites {
+        app.ui.dragging_preset_group = Some(path.clone());
+    }
+
+    paint(
+        ui.painter(),
+        Rect::from_center_size(pos2(r.left() + 22.0 + indent, r.center().y), vec2(16.0, 16.0)),
+        if open { Icon::ChevronDown } else { Icon::ChevronRight },
+        t.text_label,
+    );
+    ui.painter().text(pos2(r.left() + 36.0 + indent, r.center().y), Align2::LEFT_CENTER, label, t.semibold(13.0), t.text_label);
+
+    if resp.clicked() {
+        app.ui.group_open.insert(key, !open);
+    }
+
+    if !favorites {
+        crate::widgets::context_menu(&resp, |ui| {
+            if ui.button(crate::i18n::tr("Create Preset…")).clicked() {
+                app.ui.dialog = Some(crate::state::Dialog::create_preset_in(Some(&path)));
+            }
+            if ui.button(crate::i18n::tr("Create Subfolder…")).clicked() {
+                app.ui.dialog = Some(crate::state::Dialog::create_preset_folder(Some(path.clone())));
+            }
+            if node.user && !builtin {
+                ui.separator();
+                if ui.button(crate::i18n::tr("Rename…")).clicked() {
+                    crate::panels::dialogs::prompt(app, "Rename Folder", "Folder name", &name, "preset.renameGroup", json!({"group": &path}), "name");
+                }
+                crate::widgets::menu_button(ui, crate::i18n::tr("Move to"), |ui| {
+                    if node.depth > 0 && ui.button(crate::i18n::tr("Top Level")).clicked() {
+                        let _ = app.run("preset.moveGroup", json!({"group": &path, "parent": null}));
+                    }
+                    for g in all_user_folders {
+                        if g != &path && !g.starts_with(&format!("{path}/")) && ui.button(g).clicked() {
+                            let _ = app.run("preset.moveGroup", json!({"group": &path, "parent": g}));
+                        }
+                    }
+                });
+                if ui.button(crate::i18n::tr("Delete Folder")).clicked() {
+                    let _ = app.run("preset.deleteGroup", json!({"group": &path}));
+                }
+            }
+            ui.separator();
+            if ui.button(crate::i18n::tr("Export Folder…")).clicked() {
+                let _ = app.run("file.exportPresets", json!({"group": path}));
+            }
+        });
+    }
+
+    if !open {
+        return;
+    }
+
+    for child in &node.children {
+        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, current, thumbs, amt_id);
+    }
+
+    let active = app.session.active();
+    let (first, end) = rows_in_view(ui.cursor().top(), row_h, node.items.len(), visible);
+    if first > 0 {
+        ui.allocate_space(vec2(ui.available_width(), first as f32 * row_h));
+    }
+    for &i in node.items.get(first..end).unwrap_or_default() {
+        let Some(pr) = app.session.presets.get(i).cloned() else { continue };
+        let (pid, pname, fav) = (pr.id.clone(), crate::i18n::builtin_label(&pr.name, pr.builtin).to_string(), pr.favorite);
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
+        crate::widgets::announce(&resp, pname.clone());
+        register(ui.ctx(), if favorites { format!("presetFav:{pid}") } else { format!("preset:{pid}") }, r);
+        let is_last = marked.as_deref() == Some(pid.as_str());
+
+        if resp.drag_started() && !favorites {
+            app.ui.dragging_preset = Some(pid.clone());
+        }
+
+        if is_last {
+            register(ui.ctx(), "presetApplied", r);
+            ui.painter().rect_filled(r, 0.0, t.tool_active);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.7));
+        }
+        let look = if thumbs || resp.hovered() { current.as_ref().map(|d| pr.apply(d, 1.0)) } else { None };
+        let mut text_x = r.left() + 40.0 + indent;
+        if thumbs && let (Some(id), Some(s)) = (active, look.as_ref()) {
+            let tr = Rect::from_min_size(pos2(r.left() + 36.0 + indent, r.top() + 5.0), vec2(66.0, row_h - 10.0));
+            ui.painter().rect_filled(tr, 2.0, t.canvas);
+            if let Some(job) = app.session.variant_job(id, s, THUMB_EDGE)
+                && let Some(tex) = app.renderer.variant(job)
+            {
+                ui.painter().image(tex.tex.id(), tr, cover_uv(tr, tex.size), Color32::WHITE);
+            }
+            text_x = tr.right() + 10.0;
+        }
+        ui.painter().text(pos2(text_x, r.center().y), Align2::LEFT_CENTER, &pname, t.font(13.0), t.text_label);
+        if fav {
+            paint(ui.painter(), Rect::from_center_size(pos2(r.right() - 20.0, r.center().y), vec2(16.0, 16.0)), Icon::StarFilled, t.star);
+        }
+        if resp.hovered()
+            && let Some(s) = look
+        {
+            let label = crate::i18n::tr_format!("Preset: {name}", name = pname);
+            app.hover_preview = Some(HoverPreview { label: label.clone(), settings: s });
+            if let Some(id) = active {
+                ui.data_mut(|d| d.insert_temp(egui::Id::new("last-preset-hover"), (id, pr.clone(), label)));
+            }
+        }
+        if resp.clicked() && app.run("preset.apply", json!({"id": pid, "amount": 100})).is_ok() {
+            AppliedByPhoto::remember(ui.ctx(), &app.session, &pid);
+            ui.data_mut(|d| d.insert_temp(amt_id, AppliedPreset::new(&app.session, pid.clone(), 100.0)));
+            ui.data_mut(|d| d.remove::<(lcc_catalog::PhotoId, Preset, String)>(egui::Id::new("last-preset-hover")));
+            app.toast(ui.ctx(), crate::i18n::tr_format!("Preset: {name}", name = pname));
+        }
+        let (p_builtin, p_group) = (pr.builtin, pr.group.clone());
+        crate::widgets::context_menu(&resp, |ui| {
+            if ui.button(crate::i18n::tr(if fav { "Remove from Favorites" } else { "Add to Favorites" })).clicked() {
+                let _ = app.run("preset.favorite", json!({"id": pid}));
+            }
+            if p_builtin {
+                return;
+            }
+            ui.separator();
+            if ui.add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Update with Current Settings"))).clicked() {
+                match app.run("preset.update", json!({"id": pid})) {
+                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Updated “{name}”", name = pname)),
+                    Err(e) => app.toast(ui.ctx(), e),
+                }
+            }
+            if ui.button(crate::i18n::tr("Rename…")).clicked() {
+                crate::panels::dialogs::prompt(app, "Rename Preset", "Preset name", &pname, "preset.rename", json!({"id": pid}), "name");
+            }
+            crate::widgets::menu_button(ui, crate::i18n::tr("Move to Group"), |ui| {
+                for g in all_user_folders {
+                    if g != &p_group && ui.button(g).clicked() {
+                        let _ = app.run("preset.move", json!({"id": pid, "group": g}));
+                    }
+                }
+                if ui.button(crate::i18n::tr("New Folder…")).clicked() {
+                    crate::panels::dialogs::prompt(app, "Move Preset to New Folder", "Folder name", "", "preset.move", json!({"id": pid}), "group");
+                }
+            });
+            ui.separator();
+            if ui.button(crate::i18n::tr("Delete Preset")).clicked() {
+                let _ = app.run("preset.delete", json!({"id": pid}));
+            }
+        });
+    }
+    if end < node.items.len() {
+        ui.allocate_space(vec2(ui.available_width(), (node.items.len() - end) as f32 * row_h));
+    }
+}
+
+/// The presets by folder (hierarchical tree) after a Favorites group of the starred ones, if any;
+/// rebuilt only when the preset list changed (its generation).
+fn grouped(ctx: &egui::Context, presets: &PresetList, custom_folders: &[String]) -> Arc<Vec<FolderNode>> {
     let id = egui::Id::new("presets-grouped");
-    if let Some((generation, groups)) = ctx.data(|d| d.get_temp::<(u64, Arc<Vec<Group>>)>(id))
+    if let Some((generation, groups)) = ctx.data(|d| d.get_temp::<(u64, Arc<Vec<FolderNode>>)>(id))
         && generation == presets.generation()
     {
         return groups;
     }
-    let mut by_name: BTreeMap<&str, Group> = BTreeMap::new();
+
+    let mut folder_data: BTreeMap<String, (bool, bool, Vec<usize>)> = BTreeMap::new();
+
     for (i, p) in presets.iter().enumerate() {
-        let g = by_name.entry(&p.group).or_insert_with(|| Group {
-            name: p.group.clone(),
-            builtin: false,
-            user: false,
-            favorites: false,
-            items: Vec::new(),
-        });
-        g.builtin |= p.builtin;
-        g.user |= !p.builtin;
-        g.items.push(i);
+        let (b, u, items) = folder_data.entry(p.group.clone()).or_insert_with(|| (false, false, Vec::new()));
+        *b |= p.builtin;
+        *u |= !p.builtin;
+        items.push(i);
+
+        let mut cur = p.group.as_str();
+        while let Some((par, _)) = cur.rsplit_once('/') {
+            let (pb, pu, _) = folder_data.entry(par.to_string()).or_insert_with(|| (false, false, Vec::new()));
+            *pb |= p.builtin;
+            *pu |= !p.builtin;
+            cur = par;
+        }
     }
-    let mut groups = by_name.into_values().collect::<Vec<_>>();
-    let starred: Vec<usize> = groups.iter().flat_map(|g| g.items.iter().copied()).filter(|&i| presets.get(i).is_some_and(|p| p.favorite)).collect();
+
+    for f in custom_folders {
+        let trimmed = f.trim();
+        if !trimmed.is_empty() {
+            folder_data.entry(trimmed.to_string()).or_insert_with(|| (false, true, Vec::new()));
+            let mut cur = trimmed;
+            while let Some((par, _)) = cur.rsplit_once('/') {
+                folder_data.entry(par.to_string()).or_insert_with(|| (false, true, Vec::new()));
+                cur = par;
+            }
+        }
+    }
+
+    fn build_nodes(parent_path: Option<&str>, depth: usize, folder_data: &BTreeMap<String, (bool, bool, Vec<usize>)>) -> Vec<FolderNode> {
+        let mut direct_children: Vec<(String, String)> = Vec::new();
+        for path in folder_data.keys() {
+            match parent_path {
+                None => {
+                    if !path.contains('/') {
+                        direct_children.push((path.clone(), path.clone()));
+                    }
+                }
+                Some(parent) => {
+                    if let Some(rest) = path.strip_prefix(parent)
+                        && let Some(sub) = rest.strip_prefix('/')
+                        && !sub.contains('/')
+                    {
+                        direct_children.push((sub.to_string(), path.clone()));
+                    }
+                }
+            }
+        }
+
+        direct_children.sort_by_key(|a| a.0.to_lowercase());
+
+        let mut nodes = Vec::new();
+        for (name, full_path) in direct_children {
+            let (builtin, user, items) = folder_data.get(&full_path).cloned().unwrap_or((false, false, Vec::new()));
+            let children = build_nodes(Some(&full_path), depth + 1, folder_data);
+            let any_builtin = builtin || children.iter().any(|c| c.builtin);
+            let any_user = user || children.iter().any(|c| c.user);
+            nodes.push(FolderNode { name, path: full_path, builtin: any_builtin, user: any_user, favorites: false, depth, items, children });
+        }
+        nodes
+    }
+
+    let mut roots = build_nodes(None, 0, &folder_data);
+
+    fn collect_starred(nodes: &[FolderNode], presets: &PresetList) -> Vec<usize> {
+        let mut starred = Vec::new();
+        for node in nodes {
+            for &i in &node.items {
+                if presets.get(i).is_some_and(|p| p.favorite) && !starred.contains(&i) {
+                    starred.push(i);
+                }
+            }
+            starred.extend(collect_starred(&node.children, presets));
+        }
+        starred
+    }
+
+    let starred = collect_starred(&roots, presets);
     if !starred.is_empty() {
-        groups.insert(0, Group { name: "Favorites".into(), builtin: false, user: false, favorites: true, items: starred });
+        roots.insert(
+            0,
+            FolderNode {
+                name: "Favorites".into(),
+                path: "presetFavorites".into(),
+                builtin: false,
+                user: false,
+                favorites: true,
+                depth: 0,
+                items: starred,
+                children: Vec::new(),
+            },
+        );
     }
-    let groups = Arc::new(groups);
+
+    let groups = Arc::new(roots);
     ctx.data_mut(|d| d.insert_temp(id, (presets.generation(), groups.clone())));
     groups
 }
@@ -514,7 +720,7 @@ mod tests {
         assert!(warm < bw, "list order differs from panel order");
 
         let ctx = egui::Context::default();
-        let groups = grouped(&ctx, &session.presets);
+        let groups = grouped(&ctx, &session.presets, &session.preset_folders);
         assert_eq!(groups[0].name, "Favorites");
         assert!(!groups[0].user && !groups[0].builtin, "not a Move to Group target");
         // B&W, then Color, then the user groups
@@ -522,7 +728,7 @@ mod tests {
         for i in [bw, warm, mine] {
             assert!(groups[1..].iter().any(|g| g.items.contains(&i)), "a favourite stays in its own group");
         }
-        let named: Vec<&Group> = groups[1..].iter().filter(|g| g.name == "Favorites").collect();
+        let named: Vec<&FolderNode> = groups[1..].iter().filter(|g| g.name == "Favorites").collect();
         assert_eq!(named.len(), 1);
         assert!(named[0].user);
         assert_eq!(named[0].items, vec![plain]);
@@ -530,7 +736,7 @@ mod tests {
         for id in ["lc.warm-glow", "lc.bw-selenium", "user.mine"] {
             session.execute("preset.favorite", &json!({"id": id})).unwrap();
         }
-        let groups = grouped(&ctx, &session.presets);
+        let groups = grouped(&ctx, &session.presets, &session.preset_folders);
         assert_eq!(groups[0].name, "B&W", "no Favorites group without favourites");
     }
 
@@ -544,5 +750,91 @@ mod tests {
         let other = session.visible().iter().copied().find(|id| Some(*id) != active).unwrap();
         session.execute("library.select", &json!({"ids": [other.0]})).unwrap();
         assert!(!state.is_current(&session), "the preset belongs to the earlier selection");
+    }
+
+    /// Issue #468: Preset folders and nested subfolders.
+    #[test]
+    fn nested_preset_folders_structure_and_hierarchy() {
+        let mut session = lcc_engine::Session::with_demo();
+        let base = session.presets.iter().find(|p| p.id == "lc.warm-glow").unwrap().clone();
+        session.presets.push(Preset {
+            id: "user.mastin-direct".into(),
+            name: "Direct Mastin".into(),
+            group: "Mastin Labs".into(),
+            builtin: false,
+            ..base.clone()
+        });
+        session.presets.push(Preset {
+            id: "user.mastin-portra".into(),
+            name: "Portra 400".into(),
+            group: "Mastin Labs/Portra Original".into(),
+            builtin: false,
+            ..base.clone()
+        });
+        session.presets.push(Preset {
+            id: "user.mastin-adv".into(),
+            name: "Adventure 01".into(),
+            group: "Mastin Labs/Adventure Everyday".into(),
+            builtin: false,
+            ..base.clone()
+        });
+
+        let ctx = egui::Context::default();
+        let groups = grouped(&ctx, &session.presets, &session.preset_folders);
+
+        let mastin = groups.iter().find(|g| g.name == "Mastin Labs").expect("Mastin Labs folder at root");
+        assert_eq!(mastin.depth, 0);
+        assert_eq!(mastin.path, "Mastin Labs");
+        assert_eq!(mastin.items.len(), 1, "direct preset in Mastin Labs");
+        assert_eq!(mastin.children.len(), 2, "two subfolders under Mastin Labs");
+        assert_eq!(mastin.children[0].name, "Adventure Everyday");
+        assert_eq!(mastin.children[0].path, "Mastin Labs/Adventure Everyday");
+        assert_eq!(mastin.children[0].depth, 1);
+        assert_eq!(mastin.children[1].name, "Portra Original");
+        assert_eq!(mastin.children[1].path, "Mastin Labs/Portra Original");
+        assert_eq!(mastin.children[1].depth, 1);
+    }
+
+    /// Issue #468: Create, rename, move and delete preset folders.
+    #[test]
+    fn preset_folder_commands_crud() {
+        let mut session = lcc_engine::Session::with_demo();
+        let base = session.presets.iter().find(|p| p.id == "lc.warm-glow").unwrap().clone();
+
+        // 1. Create folders (including empty parent and child)
+        session.execute("preset.createGroup", &json!({"name": "Mastin Labs"})).unwrap();
+        session.execute("preset.createGroup", &json!({"name": "Portra Original", "parent": "Mastin Labs"})).unwrap();
+        assert!(session.preset_folders.contains(&"Mastin Labs".to_string()));
+        assert!(session.preset_folders.contains(&"Mastin Labs/Portra Original".to_string()));
+
+        // Add a preset into the folder
+        session.presets.push(Preset {
+            id: "user.p400".into(),
+            name: "Portra 400".into(),
+            group: "Mastin Labs/Portra Original".into(),
+            builtin: false,
+            ..base
+        });
+
+        // 2. Rename folder
+        session.execute("preset.renameGroup", &json!({"group": "Mastin Labs/Portra Original", "name": "Portra Pack"})).unwrap();
+        assert!(session.preset_folders.contains(&"Mastin Labs/Portra Pack".to_string()));
+        let p = session.presets.iter().find(|p| p.id == "user.p400").unwrap();
+        assert_eq!(p.group, "Mastin Labs/Portra Pack");
+
+        // 3. Move folder to top level
+        session.execute("preset.moveGroup", &json!({"group": "Mastin Labs/Portra Pack", "parent": null})).unwrap();
+        let p = session.presets.iter().find(|p| p.id == "user.p400").unwrap();
+        assert_eq!(p.group, "Portra Pack");
+
+        // 4. Move folder back into Mastin Labs
+        session.execute("preset.moveGroup", &json!({"group": "Portra Pack", "parent": "Mastin Labs"})).unwrap();
+        let p = session.presets.iter().find(|p| p.id == "user.p400").unwrap();
+        assert_eq!(p.group, "Mastin Labs/Portra Pack");
+
+        // 5. Delete folder deletes presets inside it
+        session.execute("preset.deleteGroup", &json!({"group": "Mastin Labs"})).unwrap();
+        assert!(!session.presets.iter().any(|p| p.id == "user.p400"));
+        assert!(!session.preset_folders.iter().any(|f| f.starts_with("Mastin Labs")));
     }
 }

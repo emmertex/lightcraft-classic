@@ -1136,6 +1136,12 @@ pub struct UiState {
     /// A keyword being dragged in the Keyword List (onto another to nest it).
     #[serde(skip)]
     pub dragging_keyword: Option<String>,
+    /// A preset being dragged (its id; onto a folder to move it there).
+    #[serde(skip)]
+    pub dragging_preset: Option<String>,
+    /// A preset folder being dragged (its path; onto another to nest it).
+    #[serde(skip)]
+    pub dragging_preset_group: Option<String>,
     /// A running slideshow (full screen; see [`crate::panels::slideshow`]).
     #[serde(skip)]
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
@@ -1209,6 +1215,16 @@ impl Dialog {
     /// A fresh Create Preset dialog.
     pub fn create_preset() -> Dialog {
         Dialog::CreatePreset { name: String::new(), group: "User Presets".into(), groups: default_preset_groups() }
+    }
+
+    /// A fresh Create Preset dialog pre-filling `group`.
+    pub fn create_preset_in(group: Option<&str>) -> Dialog {
+        Dialog::CreatePreset { name: String::new(), group: group.unwrap_or("User Presets").into(), groups: default_preset_groups() }
+    }
+
+    /// A fresh Create Preset Folder dialog.
+    pub fn create_preset_folder(parent: Option<String>) -> Dialog {
+        Dialog::CreatePresetFolder { name: String::new(), parent }
     }
 }
 
@@ -1424,6 +1440,11 @@ pub enum Dialog {
         group: String,
         #[serde(default = "default_preset_groups")]
         groups: Vec<String>,
+    },
+    /// Create a new preset folder (or subfolder under `parent`).
+    CreatePresetFolder {
+        name: String,
+        parent: Option<String>,
     },
     CopySettings {
         groups: Vec<String>,
@@ -1751,6 +1772,8 @@ impl Default for UiState {
             keyword_list_open: Vec::new(),
             keyword_list_selected: None,
             dragging_keyword: None,
+            dragging_preset: None,
+            dragging_preset_group: None,
             info_overlay: InfoOverlay::Off,
             layout_image: LayoutImage::default(),
             navigator: true,

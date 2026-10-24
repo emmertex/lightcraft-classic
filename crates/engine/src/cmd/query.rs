@@ -226,6 +226,26 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "presets.list", "List Presets", [], None, "{}", always, |s, _| {
             Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin})).collect()))
         }),
+        cmd!(query "presets.folders", "List Preset Folders", [], None, "{} — all preset folders (user, built-in, and empty folders)", always, |s, _| {
+            let mut set = std::collections::BTreeSet::new();
+            for f in &s.preset_folders {
+                set.insert(f.clone());
+                let mut cur = f.as_str();
+                while let Some((par, _)) = cur.rsplit_once('/') {
+                    set.insert(par.to_string());
+                    cur = par;
+                }
+            }
+            for p in s.presets.iter() {
+                set.insert(p.group.clone());
+                let mut cur = p.group.as_str();
+                while let Some((par, _)) = cur.rsplit_once('/') {
+                    set.insert(par.to_string());
+                    cur = par;
+                }
+            }
+            Ok(Value::Array(set.into_iter().map(Value::String).collect()))
+        }),
         cmd!(query "profiles.list", "List Profiles", [], None, "{} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, _| {
             let favorite = |id: &str| s.profile_favorites.iter().any(|f| f == id);
             let builtin = crate::presets::PROFILES.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": favorite(p.id)}));

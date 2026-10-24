@@ -2307,7 +2307,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     parts.push(msg);
                 }
                 if n > 0 {
-                    app.ui.presets = true;
+                    if app.ui.touch.enabled {
+                        app.ui.presets = true;
+                        app.ui.touch.panel = true;
+                    } else {
+                        app.ui.hidden_panels.retain(|x| *x != crate::module::PanelId::Presets);
+                        app.ui.left_panel = true;
+                        crate::panels::classic::set_open_with_key(app, crate::module::PanelId::Presets, crate::panels::presets::IN_COLUMN_KEY, true);
+                    }
                 }
             }
             let mut msg = parts.join(" · ");

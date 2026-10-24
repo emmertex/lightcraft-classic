@@ -227,6 +227,8 @@ mod tests_panels;
 #[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
+mod tests_preset_folders;
+#[cfg(test)]
 mod tests_preset_import;
 #[cfg(test)]
 mod tests_preview_limit;

@@ -159,6 +159,7 @@ pub struct LibraryStores {
 #[serde(default, rename_all = "camelCase")]
 struct PresetsFile {
     user: Vec<Preset>,
+    folders: Vec<String>,
     favorites: Vec<String>,
     /// Favourite profiles, and the recently applied ones (newest first).
     profile_favorites: Vec<String>,
@@ -172,6 +173,7 @@ struct PresetsFile {
 #[derive(Default)]
 struct PresetsSaved {
     generation: u64,
+    folders: Vec<String>,
     profile_favorites: Vec<String>,
     profile_recent: Vec<String>,
     /// Hash of the bytes written: a list borrowed mutably but left as it was isn't rewritten.
@@ -182,6 +184,7 @@ impl PresetsSaved {
     fn state_of(s: &Session) -> PresetsSaved {
         PresetsSaved {
             generation: s.presets.generation(),
+            folders: s.preset_folders.clone(),
             profile_favorites: s.profile_favorites.clone(),
             profile_recent: s.profile_recent.clone(),
             hash: 0,
@@ -190,7 +193,10 @@ impl PresetsSaved {
 
     /// `s` changed its presets or profile lists since this state.
     fn differs(&self, s: &Session) -> bool {
-        self.generation != s.presets.generation() || self.profile_favorites != s.profile_favorites || self.profile_recent != s.profile_recent
+        self.generation != s.presets.generation()
+            || self.folders != s.preset_folders
+            || self.profile_favorites != s.profile_favorites
+            || self.profile_recent != s.profile_recent
     }
 }
 
@@ -341,6 +347,7 @@ fn presets_json(s: &Session) -> String {
     let presets = &s.presets;
     let f = PresetsFile {
         user: presets.iter().filter(|p| !p.builtin).cloned().collect(),
+        folders: s.preset_folders.clone(),
         favorites: presets.iter().filter(|p| p.builtin && p.favorite).map(|p| p.id.clone()).collect(),
         profile_favorites: s.profile_favorites.clone(),
         profile_recent: s.profile_recent.clone(),
@@ -638,6 +645,7 @@ impl Session {
         }
         // presets
         if let Some(f) = settings.read::<PresetsFile>(files.as_mut(), "presets.json") {
+            self.preset_folders = f.folders;
             for p in &mut self.presets {
                 p.favorite = p.builtin && f.favorites.contains(&p.id) || (!p.builtin && p.favorite);
             }

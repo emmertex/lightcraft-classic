@@ -86,3 +86,39 @@ fn a_broken_cube_says_why() {
     assert!(t.contains("1 profile") && t.contains("Broken"), "{t}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #469: Importing presets does not displace the Develop Edit panel or move Presets to the right.
+#[test]
+fn importing_presets_keeps_presets_on_the_left_in_develop() {
+    let dir = temp_dir("develop-preset");
+    let xmp = dir.join("Warm_Film.xmp");
+    let content = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+      <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+        crs:PresetType="Normal" crs:Exposure2012="+0.30">
+        <crs:Name><rdf:Alt><rdf:li xml:lang="x-default">Warm Film Import Test</rdf:li></rdf:Alt></crs:Name>
+        <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">User Presets</rdf:li></rdf:Alt></crs:Group>
+      </rdf:Description>
+    </rdf:RDF></x:xmpmeta>"#;
+    std::fs::write(&xmp, content).unwrap();
+
+    let mut h = app();
+    h.request("engine.execute", json!({"command": "module.develop"}), T);
+    h.settle(SETTLE);
+    assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop);
+    assert!(!h.app.ui.presets, "starts with presets in the column, not on the right");
+
+    let r = import(&mut h, &[&xmp]);
+    assert_eq!(r["ok"], true, "{r}");
+    let t = toast(&h);
+    assert!(t.contains("1 preset"), "{t}");
+
+    // Issue #469: presets panel must remain on the left, not moved to the right column
+    assert!(!h.app.ui.presets, "presets must not move to the right side");
+    assert!(h.app.ui.left_panel, "left panel is open");
+    assert!(
+        crate::panels::classic::is_open_with_key(&h.app, crate::panels::presets::IN_COLUMN_KEY),
+        "presets section is unfolded in the left column"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

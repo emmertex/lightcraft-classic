@@ -1133,6 +1133,125 @@ pub fn specs() -> Vec<CommandSpec> {
             user_preset(s, p, c)?.group = group;
             ok()
         }),
+        cmd!("preset.createGroup", "Create Preset Folder", [], None, "{name, parent?: group}", always, |s, p| {
+            let c = "preset.createGroup";
+            let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
+            if name.contains('/') {
+                return Err(bad(c, "folder name cannot contain slashes"));
+            }
+            let parent = str_param(p, "parent").map(str::trim).filter(|p| !p.is_empty());
+            let group = match parent {
+                Some(par) => format!("{par}/{name}"),
+                None => name.to_string(),
+            };
+            if crate::presets::builtin().iter().any(|b| b.group == group) {
+                return Err(bad(c, format!("`{group}` is a built-in group")));
+            }
+            if !s.preset_folders.iter().any(|f| f == &group) {
+                s.preset_folders.push(group.clone());
+                s.presets.bump();
+            }
+            Ok(json!({"group": group}))
+        }),
+        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name}", always, |s, p| {
+            let c = "preset.renameGroup";
+            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+            let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
+            if name.contains('/') {
+                return Err(bad(c, "folder name cannot contain slashes"));
+            }
+            if crate::presets::builtin().iter().any(|b| b.group == old_group || b.group.starts_with(&format!("{old_group}/"))) {
+                return Err(bad(c, "built-in groups cannot be renamed"));
+            }
+            let new_group = match old_group.rsplit_once('/') {
+                Some((parent, _)) => format!("{parent}/{name}"),
+                None => name.to_string(),
+            };
+            if old_group == new_group {
+                return Ok(json!({"group": new_group}));
+            }
+            let old_prefix = format!("{old_group}/");
+            let new_prefix = format!("{new_group}/");
+            for f in &mut s.preset_folders {
+                if f == old_group {
+                    *f = new_group.clone();
+                } else if f.starts_with(&old_prefix) {
+                    *f = format!("{}{}", new_prefix, &f[old_prefix.len()..]);
+                }
+            }
+            for p in s.presets.iter_mut() {
+                if !p.builtin {
+                    if p.group == old_group {
+                        p.group = new_group.clone();
+                    } else if p.group.starts_with(&old_prefix) {
+                        p.group = format!("{}{}", new_prefix, &p.group[old_prefix.len()..]);
+                    }
+                }
+            }
+            s.presets.bump();
+            Ok(json!({"group": new_group}))
+        }),
+        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null}", always, |s, p| {
+            let c = "preset.moveGroup";
+            let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+            if crate::presets::builtin().iter().any(|b| b.group == old_group || b.group.starts_with(&format!("{old_group}/"))) {
+                return Err(bad(c, "built-in groups cannot be moved"));
+            }
+            let parent = str_param(p, "parent").map(str::trim).filter(|p| !p.is_empty());
+            if let Some(par) = parent
+                && (par == old_group || par.starts_with(&format!("{old_group}/")))
+            {
+                return Err(bad(c, "cannot move a folder into itself or its subfolder"));
+            }
+            let leaf = old_group.rsplit_once('/').map(|(_, l)| l).unwrap_or(old_group);
+            let new_group = match parent {
+                Some(par) => format!("{par}/{leaf}"),
+                None => leaf.to_string(),
+            };
+            if old_group == new_group {
+                return Ok(json!({"group": new_group}));
+            }
+            let old_prefix = format!("{old_group}/");
+            let new_prefix = format!("{new_group}/");
+            for f in &mut s.preset_folders {
+                if f == old_group {
+                    *f = new_group.clone();
+                } else if f.starts_with(&old_prefix) {
+                    *f = format!("{}{}", new_prefix, &f[old_prefix.len()..]);
+                }
+            }
+            for p in s.presets.iter_mut() {
+                if !p.builtin {
+                    if p.group == old_group {
+                        p.group = new_group.clone();
+                    } else if p.group.starts_with(&old_prefix) {
+                        p.group = format!("{}{}", new_prefix, &p.group[old_prefix.len()..]);
+                    }
+                }
+            }
+            s.presets.bump();
+            Ok(json!({"group": new_group}))
+        }),
+        cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
+            let c = "preset.deleteGroup";
+            let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+            if crate::presets::builtin().iter().any(|b| b.group == group || b.group.starts_with(&format!("{group}/"))) {
+                return Err(bad(c, "built-in groups cannot be deleted"));
+            }
+            let prefix = format!("{group}/");
+            s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
+            let mut removed = 0;
+            s.presets.retain(|p| {
+                if !p.builtin && (p.group == group || p.group.starts_with(&prefix)) {
+                    removed += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+            s.presets.bump();
+            Ok(json!({"deleted": removed}))
+        }),
         cmd!(
             "preset.update",
             "Update Preset with Current Settings",

@@ -251,6 +251,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::SmartRules { .. } => "Edit Smart Collection",
         Dialog::AutoStack { .. } => "Auto-Stack by Capture Time",
         Dialog::CreatePreset { .. } => "Create Preset",
+        Dialog::CreatePresetFolder { .. } => "Create Preset Folder",
         Dialog::CopySettings { .. } => "Choose Edit Settings to Copy",
         Dialog::PasteSettings { .. } => "Paste Selected Settings",
         Dialog::SyncSettings { .. } => "Synchronize Settings",
@@ -325,7 +326,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
-            Dialog::CaptureTime { .. } | Dialog::LabelNames { .. } | Dialog::CreatePreset { .. } => 440.0,
+            Dialog::CaptureTime { .. } | Dialog::LabelNames { .. } | Dialog::CreatePreset { .. } | Dialog::CreatePresetFolder { .. } => 440.0,
             _ => 380.0,
         })
         .show(ctx, |ui| {
@@ -346,6 +347,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             let formed = matches!(
                 dlg,
                 Dialog::CreatePreset { .. }
+                    | Dialog::CreatePresetFolder { .. }
                     | Dialog::Rename { .. }
                     | Dialog::ContactSheet { .. }
                     | Dialog::Timelapse { .. }
@@ -760,6 +762,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     });
                     crate::dialog_frame::group_begin(ui, Some(crate::i18n::tr("Settings to include")));
                     let _ = group_checklist(ui, "presetInclude", groups);
+                }
+                Dialog::CreatePresetFolder { name, parent } => {
+                    if let Some(par) = parent.as_ref() {
+                        field(ui, "Parent folder", |ui| {
+                            ui.label(par.as_str());
+                        });
+                    }
+                    field(ui, "Folder name", |ui| {
+                        let r = ui.add(egui::TextEdit::singleline(name).hint_text(crate::i18n::tr("Folder name")).desired_width(f32::INFINITY));
+                        crate::widgets::named(r, crate::i18n::tr("Folder name"));
+                    });
                 }
                 Dialog::CopySettings { groups } => {
                     let _ = group_checklist(ui, "copyGroup", groups);
@@ -1836,6 +1849,10 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
                 "groups": groups,
             }),
         ),
+        Dialog::CreatePresetFolder { name, parent } => {
+            let n = name.trim();
+            if n.is_empty() { Ok(serde_json::Value::Null) } else { app.run("preset.createGroup", json!({"name": n, "parent": parent})) }
+        }
         Dialog::ContactSheet { options } => app.run("app.contactSheet", json!(options)),
         Dialog::Timelapse { .. } => app.run("app.timelapse", crate::timelapse_ui::dialog_params(dlg).unwrap_or_default()),
         Dialog::SlideshowExport { settings } => app.run("app.slideshowExport", json!(settings)),

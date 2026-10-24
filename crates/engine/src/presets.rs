@@ -51,6 +51,11 @@ impl PresetList {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// Mark the list as changed (bumps the generation).
+    pub fn bump(&mut self) {
+        self.generation = next_generation();
+    }
 }
 
 impl Default for PresetList {
