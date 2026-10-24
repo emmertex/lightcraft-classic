@@ -18,6 +18,8 @@
 //! cost: file read, decode, binning, embedded stand-ins, `load_bytes(2560)`, the fs loader),
 //! `ONLY=load1` (decode checksum + `load_bytes(2560)`; `LOADONLY=1`: only that, for a profiler),
 //! `ONLY=jpeg` (a JPEG decoded to fit 256–2560 px boxes).
+//! `ONLY=hdr`: an HDR edit's whole-frame float render made into its HDR display texture (each
+//! update of an HDR view, within the 16 ms slider budget).
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -394,6 +396,12 @@ fn main() {
         });
         lcc_engine::gpu::set_enabled(true);
         return;
+    }
+    if run("hdr") {
+        let (w, h) = (2560, 1707);
+        let rgb: Vec<f32> = (0..w * h * 3).map(|i| (i % 8192) as f32 / 2048.0).collect();
+        let encode = || drop(lcc_engine::hdr_texture::encode_rgba16f(&rgb, w, h, 4.0).expect("encode"));
+        println!("{:<38} {}", format!("HDR texture encode {w}×{h}:"), best(n, encode));
     }
     if run("export") {
         let big = RenderRequest::fit(full.width, full.height);

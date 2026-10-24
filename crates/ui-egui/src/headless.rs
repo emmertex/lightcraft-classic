@@ -4928,13 +4928,21 @@ mod tests {
                             })
                             .expect("the photo's actual painted quad")
                     };
+                    // (the texture on screen: an HDR drag draws HDR drafts alone, no 8-bit ones)
+                    let shown_size = |h: &Headless| {
+                        if h.app.loupe_shown.is_some_and(|(_, source)| source == "hdr") {
+                            h.app.renderer.hdr_view[&crate::render::HDR_LOUPE].size
+                        } else {
+                            h.app.renderer.textures[&Slot::Main].size
+                        }
+                    };
                     assert!(h.settle(SETTLE));
                     let still = bounds(&h);
-                    let still_size = h.app.renderer.textures[&Slot::Main].size;
+                    let still_size = shown_size(&h);
                     assert_eq!(Some(still), h.app.image_rect);
                     h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
                     assert!(h.settle(SETTLE));
-                    let draft_size = h.app.renderer.textures[&Slot::Main].size;
+                    let draft_size = shown_size(&h);
                     assert_ne!(still_size, draft_size, "the test exercises a real texture-size transition");
                     assert_eq!(bounds(&h), still, "drag: {native:?}, {ppp}x, HDR {hdr}");
                     h.app.run("develop.set", json!({"values": {"light.exposure": 0.25}})).unwrap();
@@ -4963,7 +4971,7 @@ mod tests {
             }
             fn upload(&mut self, view: u8, width: usize, height: usize, rgb: &[f32]) -> Result<egui::TextureId, String> {
                 assert_eq!(rgb.len(), width * height * 3);
-                self.0.borrow_mut().push((view, rgb.iter().copied().fold(0.0, f32::max)));
+                self.0.borrow_mut().push((crate::render::hdr_slot_view(view), rgb.iter().copied().fold(0.0, f32::max)));
                 Ok(egui::TextureId::User(7 + u64::from(view)))
             }
         }
@@ -4978,8 +4986,9 @@ mod tests {
         h.request("engine.execute", json!({"command": "develop.set", "params": {"values": {"light.exposure": 2.0}}}), t);
         let hdr_shown = |h: &Headless| h.app.loupe_shown.is_some_and(|(_, s)| s == "hdr");
         assert!(h.step_until(SETTLE, hdr_shown), "the fit loupe shows the HDR texture");
-        // Every adjustment must keep HDR visible while new float drafts are in flight.
-        let id = h.app.session.active().unwrap();
+        h.settle(SETTLE);
+        // Every adjustment keeps HDR visible while new float drafts are in flight, and draws
+        // them alone: no 8-bit draft of each step beside them.
         h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
         for control in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks", "color.saturation"] {
             let before = uploads.borrow().len();
@@ -4993,8 +5002,7 @@ mod tests {
                 "live HDR update: {control}"
             );
             assert!(h.app.session.interaction.is_some());
-            let key = h.app.renderer.hdr_view[&HDR_LOUPE].key;
-            assert!(crate::panels::detail::hdr_texture(&h.app, HDR_LOUPE, id, Some(key ^ 1)).is_some(), "retain HDR between updates");
+            assert!(!h.app.renderer.is_pending(crate::render::Slot::Main), "an 8-bit draft beside the HDR ones: {control}");
         }
         h.app.run("develop.endInteraction", json!({})).unwrap();
         let before = uploads.borrow().len();
@@ -5012,21 +5020,53 @@ mod tests {
         h.request("ui.menu.invoke", json!({"id": "view.hdrPreview"}), t);
         assert!(h.app.ui.hdr_preview);
         assert!(h.step_until(SETTLE, hdr_shown), "HDR Preview on again");
-        // zoomed in: the part on screen gets its own HDR render, highlights above SDR white
+        // zoomed in: the part on screen gets its own HDR render, highlights above SDR white; until
+        // it comes the whole frame's HDR shows (softer), never 8-bit tiles of another brightness
         h.request("ui.menu.invoke", json!({"id": "view.zoom100"}), t);
-        let zoomed = |h: &Headless| h.app.region_view.is_some() && uploads.borrow().iter().any(|(v, m)| *v == HDR_ZOOMED + PANE_AFTER && *m > 1.0);
+        let no_tiles = |h: &Headless| h.app.renderer.tiles_pending() == 0 && h.app.renderer.tiles.is_empty();
+        let zoomed = |h: &Headless| {
+            assert!(hdr_shown(h) && no_tiles(h), "an 8-bit tile while zooming in");
+            h.app.region_view.is_some() && uploads.borrow().iter().any(|(v, m)| *v == HDR_ZOOMED + PANE_AFTER && *m > 1.0)
+        };
         assert!(h.step_until(SETTLE, zoomed), "zoomed HDR window: {:?}", uploads.borrow());
-        let before = uploads.borrow().iter().filter(|(v, _)| *v == HDR_ZOOMED + PANE_AFTER).count();
+        h.settle(SETTLE);
+        let zoomed_uploads = || uploads.borrow().iter().filter(|(v, _)| *v == HDR_ZOOMED + PANE_AFTER).count();
+        let before = zoomed_uploads();
         h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
         h.app.run("develop.set", json!({"values": {"light.exposure": 2.5}})).unwrap();
         assert!(
             h.step_until(SETTLE, |h| {
                 assert!(hdr_shown(h), "zoomed interaction keeps the HDR underlay");
-                uploads.borrow().iter().filter(|(v, _)| *v == HDR_ZOOMED + PANE_AFTER).count() > before
+                assert!(!h.app.renderer.is_pending(crate::render::Slot::Window(PANE_AFTER)), "an 8-bit window draft under the HDR window");
+                zoomed_uploads() > before
             }),
             "zoomed drafts upload through HDR too"
         );
         h.app.run("develop.endInteraction", json!({})).unwrap();
+        h.settle(SETTLE);
+        // a pan: the window there was stays where it belongs while the new part's renders (no
+        // 8-bit tiles), and panning back shows the first one again at once, rendering nothing
+        let id = h.app.session.active().unwrap();
+        let shown = |h: &Headless| h.app.renderer.hdr_view.get(&(HDR_ZOOMED + PANE_AFTER)).filter(|v| v.photo == id).map(|v| (v.key, v.window));
+        let (first, old) = (shown(&h).expect("a zoomed HDR window"), h.app.region_view.expect("zoomed").window);
+        let before = zoomed_uploads();
+        h.request("ui.set", json!({"pan": [0.2, 0.3]}), t);
+        assert_ne!(h.app.region_view.expect("zoomed").window, old, "the pan shows another part");
+        assert!(
+            h.step_until(SETTLE, |h| {
+                assert!(no_tiles(h), "an 8-bit tile after a pan");
+                assert!(shown(h).is_some(), "a pan leaves no HDR window up");
+                zoomed_uploads() > before
+            }),
+            "the new part's HDR window"
+        );
+        h.settle(SETTLE);
+        assert_ne!(shown(&h), Some(first));
+        let before = zoomed_uploads();
+        h.request("ui.set", json!({"pan": [0.5, 0.5]}), t);
+        h.settle(SETTLE);
+        assert_eq!(shown(&h), Some(first), "back where it was: the window it showed");
+        assert_eq!(zoomed_uploads(), before, "shown again without rendering it again");
         // Before / After side by side, fit: the After stays HDR, the original is SDR
         h.request("ui.menu.invoke", json!({"id": "view.zoomFit"}), t);
         h.request("ui.menu.invoke", json!({"id": "view.beforeAfter"}), t);
@@ -5089,6 +5129,100 @@ mod tests {
             assert!(h.step_until(SETTLE, hdr_shown), "off again: HDR");
             assert!(h.app.ui.hdr_preview);
         }
+    }
+
+    /// A slider drag of an HDR edit on an HDR display: the views that show the edit (the After
+    /// of a Before / After split, the second window) stay HDR and update live; what the drag
+    /// does not change (another photo's Compare tile) is not rendered again at its start or end.
+    #[test]
+    fn hdr_drags_update_the_views_of_the_edit_and_leave_the_rest() {
+        use crate::render::{HDR_BEFORE, HDR_COMPARE, HDR_LOUPE, HDR_SECOND, Slot};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        struct Fake(Rc<RefCell<Vec<u8>>>);
+        impl crate::HdrOutput for Fake {
+            fn headroom(&mut self) -> Option<f32> {
+                Some(4.0)
+            }
+            fn upload(&mut self, view: u8, _: usize, _: usize, _: &[f32]) -> Result<egui::TextureId, String> {
+                self.0.borrow_mut().push(crate::render::hdr_slot_view(view));
+                Ok(egui::TextureId::User(7 + u64::from(view)))
+            }
+        }
+        let t = Duration::from_secs(10);
+        let uploads = Rc::new(RefCell::new(Vec::new()));
+        let services = crate::Services { png: None, hdr_output: Some(Box::new(Fake(uploads.clone()))), ..Default::default() };
+        let mut app = LccApp::new(lcc_engine::Session::with_demo(), services);
+        app.ui.view = crate::state::ViewMode::PhotoGrid;
+        let mut h = Headless::new(app, [1000.0, 700.0], 1.0);
+        let count = |view: u8| uploads.borrow().iter().filter(|v| **v == view).count();
+        let vis = h.app.session.visible_cloned();
+        h.request("ui.set", json!({"view": "detail"}), t);
+        for id in [vis[0], vis[1]] {
+            h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [id.0]}}), t);
+            h.request("engine.execute", json!({"command": "develop.hdr", "params": {"enabled": true}}), t);
+            h.request("engine.execute", json!({"command": "develop.set", "params": {"values": {"light.exposure": 2.0}}}), t);
+        }
+        let id = h.app.session.active().unwrap();
+        // a drag of two steps: each step's HDR frame of `view` arrives, and `shown` holds on every frame
+        let drag = |h: &mut Headless, view: u8, shown: &dyn Fn(&Headless) -> bool, what: &str| {
+            h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
+            for value in [2.5, 3.0] {
+                let before = count(view);
+                h.app.run("develop.set", json!({"values": {"light.exposure": value}})).unwrap();
+                assert!(
+                    h.step_until(SETTLE, |h| {
+                        assert!(shown(h), "{what}: an SDR frame in the drag");
+                        count(view) > before
+                    }),
+                    "{what}: live HDR updates"
+                );
+            }
+            h.app.run("develop.endInteraction", json!({})).unwrap();
+            h.settle(SETTLE);
+            assert!(shown(h), "{what}: HDR after the release");
+        };
+        // Before / After side by side: the After stays HDR through the drag; the Before (no
+        // edits) is not an HDR edit
+        h.request("ui.set", json!({"beforeAfter": "sideBySide"}), t);
+        let after_hdr = |h: &Headless| h.app.loupe_shown.is_some_and(|(_, s)| s == "hdr");
+        assert!(h.step_until(SETTLE, after_hdr));
+        h.settle(SETTLE);
+        drag(&mut h, HDR_LOUPE, &after_hdr, "Before / After");
+        assert_eq!(count(HDR_BEFORE), 0);
+        h.request("ui.set", json!({"beforeAfter": "off"}), t);
+        // the second window: its HDR frame is up on every frame of the drag
+        h.app.run("second.live", json!({})).unwrap();
+        let second_hdr = |h: &Headless| {
+            let wanted = h.app.renderer.wanted(Slot::HdrView(HDR_SECOND));
+            h.app
+                .renderer
+                .hdr_view
+                .get(&HDR_SECOND)
+                .is_some_and(|v| v.photo == id && wanted.is_none_or(|k| h.app.renderer.hdr_frame(HDR_SECOND, id, k).is_some()))
+        };
+        assert!(h.step_until(SETTLE, |h| count(HDR_SECOND) > 0 && second_hdr(h)), "the second window shows the HDR edit");
+        h.settle(SETTLE);
+        drag(&mut h, HDR_SECOND, &second_hdr, "second window");
+        h.app.run("view.secondWindow", json!({"show": false})).unwrap();
+        // Compare: the select (not being edited) keeps its HDR render through a drag of the candidate
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [vis[0].0, vis[1].0]}}), t);
+        h.request("engine.execute", json!({"command": "view.compare"}), t);
+        let select = vis[0];
+        let select_view = |h: &Headless| (HDR_COMPARE..HDR_COMPARE + 2).find(|v| h.app.renderer.hdr_view.get(v).is_some_and(|x| x.photo == select));
+        assert!(h.step_until(SETTLE, |h| select_view(h).is_some()), "the select's HDR tile");
+        h.settle(SETTLE);
+        let view = select_view(&h).unwrap();
+        let (held, rendered) = (h.app.renderer.hdr_view[&view].key, count(view));
+        h.app.run("develop.beginInteraction", json!({"label": "Exposure"})).unwrap();
+        h.app.run("develop.set", json!({"values": {"light.exposure": 3.5}})).unwrap();
+        for _ in 0..10 {
+            h.step();
+            assert!(!h.app.renderer.is_pending(Slot::HdrView(view)), "the select's tile renders again in the drag");
+        }
+        h.app.run("develop.endInteraction", json!({})).unwrap();
+        h.settle(SETTLE);
+        assert_eq!((h.app.renderer.hdr_view[&view].key, count(view)), (held, rendered), "the select is not rendered again");
     }
 
     /// HDR display output touches the loupe only: the navigator / filmstrip thumbnail and the

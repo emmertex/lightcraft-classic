@@ -16,6 +16,7 @@ lcc-brand = { workspace = true }
 lcc-geom = { workspace = true }
 lcc-color = { workspace = true }
 lcc-raster = { workspace = true }
+half = { workspace = true } # HDR view textures (`hdr_texture`): f32 → f16 texels
 lcc-develop = { workspace = true }
 lcc-scenes = { workspace = true }
 lcc-pipeline = { workspace = true }

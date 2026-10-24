@@ -347,9 +347,17 @@ pub trait HdrOutput {
     /// `None` (an SDR display, HDR switched off in the OS, or unknown). Asked every frame.
     fn headroom(&mut self) -> Option<f32>;
     /// Upload a linear-light render (3 floats per pixel, row-major, SDR white = 1, sRGB
-    /// primaries) as view `view`'s HDR texture ([`render::HDR_LOUPE`]…), replacing that view's
-    /// previous one (each view keeps its own).
-    fn upload(&mut self, view: u8, width: usize, height: usize, rgb: &[f32]) -> Result<egui::TextureId, String>;
+    /// primaries) as the HDR texture of `slot`, replacing that slot's previous one (each slot
+    /// keeps its own): a view's ([`render::HDR_LOUPE`]…), or one of a zoomed view's recent
+    /// windows, kept to show again.
+    fn upload(&mut self, slot: u8, width: usize, height: usize, rgb: &[f32]) -> Result<egui::TextureId, String>;
+    /// [`Self::upload`] of a render already encoded as `Rgba16Float` texels for `headroom` (by
+    /// [`lcc_engine::hdr_texture::encode_rgba16f`], on a render worker). `None`: this output
+    /// doesn't take them (it uploads with another headroom), and [`Self::upload`] is used.
+    fn upload_texels(&mut self, slot: u8, width: usize, height: usize, texels: &[u16], headroom: f32) -> Option<Result<egui::TextureId, String>> {
+        let _ = (slot, width, height, texels, headroom);
+        None
+    }
     /// Whether the window surface is extended linear sRGB (macOS EDR / Windows scRGB): when
     /// true, the renderer should skip monitor profile conversion (P2-3).
     fn extended(&self) -> bool {
