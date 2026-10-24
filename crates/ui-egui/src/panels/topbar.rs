@@ -56,14 +56,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     };
     egui::Panel::top("top_bar")
         .exact_size(t.top_bar_h)
-        .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin { left, right: 12, top: 0, bottom: 0 }))
+        .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin { left, right: 16, top: 0, bottom: 0 }))
         .show(ui, |ui| {
             let full = ui.max_rect();
             // The whole bar, its margins included. The search field is centred on this and not on
             // `full`, which is only what the margins leave: on macOS the left margin holds the
             // traffic lights' room, and full screen gives that room back. Centring on `full` moved
             // the field, and changed its width, every time that room changed (issue #2365).
-            let bar = Rect::from_min_max(pos2(full.left() - left as f32, full.top()), pos2(full.right() + 12.0, full.bottom()));
+            let bar = Rect::from_min_max(pos2(full.left() - left as f32, full.top()), pos2(full.right() + 16.0, full.bottom()));
             // The field stops short of the filter icon and the seven icons on the right; centred,
             // it is twice the room between the window's centre and them.
             let mut sw = 640.0f32.min(2.0 * (full.right() - 310.0 - bar.center().x)).max(190.0);
@@ -160,7 +160,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 let _ = app.run("view.filterBar", json!({}));
             }
             // right icons; rightmost, mirroring the sidebar button: show/hide the module bar
-            let mut x = full.right() - 18.0;
+            let mut x = full.right() - 15.0;
             let r = Rect::from_center_size(pos2(x, full.center().y), vec2(30.0, 30.0));
             let mut top = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)));
             if icon_button(&mut top, "moduleBar", Icon::SidebarTop, vec2(30.0, 30.0), app.ui.module_bar, true, crate::i18n::tr("Show/hide top panel"))

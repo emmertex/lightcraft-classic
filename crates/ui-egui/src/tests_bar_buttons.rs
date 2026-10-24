@@ -44,6 +44,16 @@ fn right_column_bar_buttons_fill_its_width() {
     assert!(meta.width() > left.width() * 0.6, "about as wide as the left column's buttons");
     ask(&mut h, "engine.execute", json!({"command": "module.develop", "params": {}}));
     let (sync, reset) = (rect(&h, "button:syncBar"), rect(&h, "button:reset"));
-    let switch = rect(&h, "button:autoSyncSwitch");
-    share(sync, reset, h.app.ui.right_width - (switch.right() - switch.left()), "Develop");
+    let _switch = rect(&h, "button:autoSyncSwitch");
+    // Issue #449: Develop action buttons are right-aligned and balanced in width rather than full-width stretched
+    assert!((sync.width() - reset.width()).abs() <= 1.0, "Develop: the same width ({} and {})", sync.width(), reset.width());
+    assert!(sync.right() < reset.left() && (sync.center().y - reset.center().y).abs() < 1.0, "Develop: side by side");
+    // Right button is aligned to the right panel margin (16.0 pad)
+    let panel_right = 1400.0;
+    assert!(
+        (panel_right - reset.right() - 16.0).abs() <= 2.0,
+        "Develop: Reset button right-aligned with 16px margin (reset.right: {}, panel_right: {})",
+        reset.right(),
+        panel_right
+    );
 }

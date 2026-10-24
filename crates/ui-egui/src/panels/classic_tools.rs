@@ -34,26 +34,27 @@ pub(super) fn row(app: &mut LccApp, ui: &mut egui::Ui) {
     let has_photo = app.session.active().is_some();
     let tools: Vec<PanelId> = crate::panels::strip::strip_panels(app).into_iter().filter(|p| *p != PanelId::Edit).collect();
     let width = ui.available_width();
-    ui.allocate_ui_with_layout(vec2(width, ROW_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.add_space(((width - tools.len() as f32 * (BUTTON_W + 4.0)) / 2.0).max(0.0));
-        for p in &tools {
-            let Some((id, icon, panel, tip, needs_photo)) = crate::panels::strip::entry(*p) else { continue };
-            let on = app.ui.right == panel;
-            let video = crate::video_ui::blocked(app, &format!("panel.{id}"));
-            let sc = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, &format!("panel.{id}"));
-            let tip = if video { crate::i18n::tr(crate::video_ui::NOT_FOR_VIDEO).to_string() } else { crate::widgets::command_tooltip(ui, tip, sc) };
-            let name = crate::i18n::tr(entry_name(*p));
-            let resp = icon_button_named(ui, id, icon, vec2(BUTTON_W, ROW_H - 4.0), on, (has_photo || !needs_photo) && !video, name, &tip);
-            if resp.clicked() {
-                // the tool in use: its drawer closes, back to the panels
-                let cmd = if on { "panel.edit".to_string() } else { format!("panel.{id}") };
-                let _ = app.run(&cmd, json!({}));
-            }
-            // the strip's header menu: show/hide, solo, hiding mode
-            crate::panels::classic::side_menu(app, &resp, crate::panels::strip::strip_declared(ModuleId::Develop));
+    let (row_rect, _) = ui.allocate_exact_size(vec2(width, ROW_H), egui::Sense::hover());
+    let total_tools_w = tools.len() as f32 * BUTTON_W + (tools.len().saturating_sub(1)) as f32 * 4.0;
+    let group_rect = egui::Rect::from_center_size(row_rect.center(), vec2(total_tools_w, ROW_H));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(group_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.spacing_mut().item_spacing.x = 4.0;
+    for p in &tools {
+        let Some((id, icon, panel, tip, needs_photo)) = crate::panels::strip::entry(*p) else { continue };
+        let on = app.ui.right == panel;
+        let video = crate::video_ui::blocked(app, &format!("panel.{id}"));
+        let sc = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, &format!("panel.{id}"));
+        let tip = if video { crate::i18n::tr(crate::video_ui::NOT_FOR_VIDEO).to_string() } else { crate::widgets::command_tooltip(&child, tip, sc) };
+        let name = crate::i18n::tr(entry_name(*p));
+        let resp = icon_button_named(&mut child, id, icon, vec2(BUTTON_W, ROW_H - 4.0), on, (has_photo || !needs_photo) && !video, name, &tip);
+        if resp.clicked() {
+            // the tool in use: its drawer closes, back to the panels
+            let cmd = if on { "panel.edit".to_string() } else { format!("panel.{id}") };
+            let _ = app.run(&cmd, json!({}));
         }
-    });
+        // the strip's header menu: show/hide, solo, hiding mode
+        crate::panels::classic::side_menu(app, &resp, crate::panels::strip::strip_declared(ModuleId::Develop));
+    }
     divider(ui);
 }
 

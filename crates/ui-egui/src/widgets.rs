@@ -273,9 +273,8 @@ pub(crate) fn shown_value(spec: &ControlSpec, v: f64) -> String {
 /// scrub rather than a click that types a value.
 const SCRUB_START: f32 = 3.0;
 
-/// The radius of a slider's thumb: a small solid dot, as in DaVinci Resolve (issue #346: the
-/// larger ring crowded the panel).
-const THUMB_RING: f32 = 4.0;
+/// The radius of a slider's thumb: scaled up for visibility and tactile feel (issues #346, #449).
+const THUMB_RING: f32 = 5.2;
 
 /// Size of a slider's name and value in a panel (issue #346: small enough that names fit).
 const LABEL_FONT: f32 = 10.5;
@@ -721,7 +720,7 @@ struct SliderGeometry {
 }
 
 /// How much taller a two-row slider is than a one-row one.
-const TWO_ROW_EXTRA: f32 = 14.0;
+const TWO_ROW_EXTRA: f32 = 16.0;
 
 /// Height of a two-row slider's name and value line at [`LABEL_FONT`].
 const TWO_ROW_TEXT_H: f32 = 12.0;
@@ -737,12 +736,12 @@ const MAX_LABEL_COL: f32 = 76.0;
 
 impl SliderGeometry {
     fn new(row: Rect, label_col: f32, k: f32) -> Self {
-        let (pad_l, pad_r, gap) = (12.0, 12.0, 8.0);
+        let (pad_l, pad_r, gap) = (16.0, 16.0, 8.0);
         let label = Rect::from_min_size(pos2(row.left() + pad_l, row.top()), vec2(label_col, row.height()));
         let value =
             Rect::from_min_max(pos2((row.right() - pad_r - VALUE_W * k).max(label.right()), row.top()), pos2(row.right() - pad_r, row.bottom()));
-        let track_l = label.right() + gap;
-        let track_r = (value.left() - gap).max(track_l + 1.0);
+        let track_l = label.right() + gap + THUMB_RING;
+        let track_r = (value.left() - gap - THUMB_RING).max(track_l + 1.0);
         let track = Rect::from_min_max(pos2(track_l, row.top()), pos2(track_r, row.bottom()));
         Self { label, track, value }
     }
@@ -750,10 +749,10 @@ impl SliderGeometry {
     /// Two rows: the name at the left and the value at the right of the top line, the track the
     /// width of both under them (its thumb at either end just inside the row's padding).
     fn two_rows(row: Rect, k: f32) -> Self {
-        let (pad_l, pad_r) = (12.0, 12.0);
+        let (pad_l, pad_r) = (16.0, 16.0);
         // the name and value sit close over their own track, with the gap above them, so each
-        // slider reads as one unit and the rows stand apart (issue #346)
-        let split = (row.bottom() - 14.0).max(row.top());
+        // slider reads as one unit and the rows stand apart (issues #346, #449)
+        let split = (row.bottom() - 15.0).max(row.top());
         let text_top = (split - TWO_ROW_TEXT_H * k).max(row.top());
         let value = Rect::from_min_max(pos2((row.right() - pad_r - VALUE_W * k).max(row.left() + pad_l), text_top), pos2(row.right() - pad_r, split));
         let label = Rect::from_min_max(pos2(row.left() + pad_l, text_top), pos2((value.left() - 8.0).max(row.left() + pad_l), split));
@@ -844,9 +843,9 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     if ui.rect_contains_pointer(r) {
         p.rect_filled(r, 0.0, t.chrome.gamma_multiply(1.06));
     }
-    let chev = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(16.0, 16.0));
+    let chev = Rect::from_center_size(pos2(r.left() + 24.0, r.center().y), vec2(16.0, 16.0));
     paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_label);
-    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
+    p.text(pos2(r.left() + 38.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
     let mut toggled = None;
     // shown while the pointer is anywhere on the header: `resp.hovered()` turns false as soon as the
     // pointer is over the eye itself (the eye is on top), which hid the eye before it could be
@@ -854,7 +853,7 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     if let Some(on) = enabled
         && (ui.rect_contains_pointer(r) || !on)
     {
-        let eye = Rect::from_center_size(pos2(r.right() - 34.0, r.center().y), vec2(18.0, 18.0));
+        let eye = Rect::from_center_size(pos2(r.right() - 25.0, r.center().y), vec2(18.0, 18.0));
         let er = ui.interact(eye, ui.id().with(("eye", id)), Sense::click());
         crate::widgets::announce_selected(&er, crate::i18n::tr("Show / hide"), on);
         register(ui.ctx(), format!("sectionEye:{id}"), eye);

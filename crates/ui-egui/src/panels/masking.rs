@@ -112,7 +112,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
     let d = app.session.develop_of(id).unwrap_or_default();
     header(ui, "Masking");
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 0, bottom: 10 }).show(ui, |ui| {
         ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).color(t.text_dim));
         ui.add_space(6.0);
         let tiles: [(&str, &str); 10] = [
@@ -215,6 +215,33 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             });
         }
     });
+    // active mask Amount slider near top under creation icons (issues #449, #471)
+    if let Some((index, m)) = app.session.active_mask.and_then(|mid| d.masks.iter().enumerate().find(|(_, m)| m.id == mid)) {
+        let mask_num = index + 1;
+        let title = if m.name.is_empty() || m.name == format!("Mask {mask_num}") {
+            crate::i18n::tr_format!("Mask {mask_num}", mask_num = mask_num)
+        } else {
+            format!("{mask_num}. {}", m.name)
+        };
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 4, bottom: 8 }).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add(egui::Label::new(egui::RichText::new(&title).font(t.semibold(12.0)).color(t.text_dim)).truncate());
+            });
+            let amt = ControlSpec {
+                id: "amount",
+                label: "Amount",
+                section: Section::Light,
+                min: 0.0,
+                max: 200.0,
+                default: 100.0,
+                step: 1.0,
+                decimals: 0,
+                track: Track::Plain,
+            };
+            let out = slider(ui, &amt, m.adjust.amount, true, None);
+            apply_slider_out(app, &amt, out, |app, v| app.run("mask.adjust", json!({"values": {"amount": v}})));
+        });
+    }
     divider(ui);
     // mask list
     egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 8, bottom: 8 }).show(ui, |ui| {
@@ -323,7 +350,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let Some(mid) = app.session.active_mask else { return };
     let Some(m) = d.masks.iter().find(|m| m.id == mid).cloned() else { return };
     divider(ui);
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 8, bottom: 8 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 8, bottom: 8 }).show(ui, |ui| {
         for (i, c) in m.components.iter().enumerate() {
             let (kind, icon) = kind_label(&c.shape);
             let label = c.name.clone().unwrap_or_else(|| match &c.shape {
@@ -416,19 +443,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
     }
-    let amt = ControlSpec {
-        id: "amount",
-        label: "Amount",
-        section: Section::Light,
-        min: 0.0,
-        max: 200.0,
-        default: 100.0,
-        step: 1.0,
-        decimals: 0,
-        track: Track::Plain,
-    };
-    let out = slider(ui, &amt, m.adjust.amount, true, None);
-    apply_slider_out(app, &amt, out, |app, v| app.run("mask.adjust", json!({"values": {"amount": v}})));
     ui.add_space(30.0);
     let _ = Stroke::NONE;
 }
@@ -905,7 +919,7 @@ fn component_menu(app: &mut LccApp, ui: &mut egui::Ui, op: &str) {
 
 fn brush_settings(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 0 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 0 }).show(ui, |ui| {
         // wraps at narrow panel widths (and long translations) rather than widening the panel
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(crate::i18n::tr("Brush")).font(t.semibold(13.0)));

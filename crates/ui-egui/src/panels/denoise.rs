@@ -132,8 +132,8 @@ fn watch_downloads(app: &mut LccApp, ctx: &egui::Context) {
 /// Per-photo AI Denoise switch, including a request waiting for model installation.
 pub fn detail_toggle(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, on: bool, applicable: bool) {
     let mut enabled = on || crate::model_setup::denoise_requested(app, id);
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
-        let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("AI Denoise")));
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
+        let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("Enable")));
         if !applicable && let Some((why, detail)) = not_applicable(app, id) {
             let tip = match detail {
                 Some(d) => format!("{} {d}", tr(why)),
@@ -152,7 +152,7 @@ pub fn detail_toggle(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, on: bool,
 pub fn detail_status(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, amount: f64) {
     let t = Tokens::get(ui.ctx());
     let state = app.session.denoise_photo_state(id);
-    let pad = egui::Margin { left: 12, right: 16, top: 0, bottom: 6 };
+    let pad = egui::Margin { left: 16, right: 16, top: 0, bottom: 6 };
     let note = |ui: &mut egui::Ui, text: &str, color: egui::Color32| {
         ui.add(egui::Label::new(RichText::new(crate::i18n::tr(text)).size(11.0).color(color)).wrap());
     };
@@ -173,7 +173,9 @@ pub fn detail_status(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, amount: f
             egui::Frame::NONE.inner_margin(pad).show(ui, |ui| {
                 note(ui, "AI Denoise needs a model. Install one in Settings.", t.text_dim);
                 ui.add_space(2.0);
-                let r = ui.small_button(crate::i18n::tr("Set up AI Denoise…"));
+                let r = ui.add(
+                    egui::Button::new(RichText::new(crate::i18n::tr("Set up AI Denoise…")).size(11.0).color(t.text)).min_size(egui::vec2(0.0, 20.0)),
+                );
                 register(ui.ctx(), "denoise:setup", r.rect);
                 if r.clicked() {
                     let _ = app.run("denoise.toggle", json!({"id": id.0, "enabled": true}));

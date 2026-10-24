@@ -250,7 +250,7 @@ fn human_size(bytes: u64) -> String {
 }
 
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 6 }).show(ui, add);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 6 }).show(ui, add);
 }
 
 /// The panel. `id` is the active photo; the fields show (and edit) every selected photo.

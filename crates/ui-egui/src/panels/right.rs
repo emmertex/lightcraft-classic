@@ -125,9 +125,11 @@ fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     ui.painter().hline(r.x_range(), r.top() + 0.5, egui::Stroke::new(1.0, t.divider));
     let auto = app.session.auto_sync;
     let several = app.session.selection.ids.len() > 1;
-    // after the switch, the two buttons share the rest of the bar (issue #221)
-    let (left, switch_w, gap, right) = (16.0, 30.0, 8.0, 12.0);
-    let w = crate::widgets::shared_width(r.width() - left - switch_w - gap - right, 2, gap);
+    // after the switch on the left, the action buttons are right-aligned with balanced widths (issues #221, #449)
+    let (left, switch_w, gap, right) = (16.0, 30.0, 8.0, 16.0);
+    let max_w = 110.0f32;
+    let full_w = crate::widgets::shared_width(r.width() - left - switch_w - gap * 2.0 - right, 2, gap);
+    let w = full_w.min(max_w).max(75.0);
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.add_space(left);
@@ -143,6 +145,13 @@ fn sync_bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         let tip = crate::i18n::tr(if auto { "Auto Sync is on: edits apply to every selected photo" } else { "Turn on Auto Sync" });
         if resp.on_hover_text(tip).clicked() {
             let _ = app.run("develop.autoSync", json!({"on": !auto}));
+        }
+        // push action buttons to align with the right margin
+        let buttons_w = 2.0 * w + gap;
+        let target_x = r.right() - right - buttons_w;
+        let current_x = ui.cursor().left();
+        if target_x > current_x {
+            ui.add_space(target_x - current_x);
         }
         let (id, label) = match (auto, several) {
             (true, _) => ("syncBar", "Auto Sync"),
@@ -238,7 +247,7 @@ pub fn label_row(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 6 }).show(ui, add);
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 6, bottom: 6 }).show(ui, add);
 }
 
 /// What the aspect button says for the stored lock (`aspect` = width × 100, height × 100):

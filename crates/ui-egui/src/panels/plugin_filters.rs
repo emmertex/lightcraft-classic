@@ -108,7 +108,7 @@ const WARN: Color32 = Color32::from_rgb(0xe0, 0xa0, 0x30);
 
 /// The inset of everything in the section that isn't a slider (sliders inset themselves).
 fn inset<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 2, bottom: 2 }).show(ui, add).inner
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 16, right: 16, top: 2, bottom: 2 }).show(ui, add).inner
 }
 
 /// What a row needs from the session besides the entry.
