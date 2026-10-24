@@ -42,8 +42,6 @@ chrono = { workspace = true }
 # the control port token
 getrandom = { workspace = true }
 log = { workspace = true }
-# the loupe's HDR texture (`hdr_display`): f32 → f16 texels, uploaded as bytes
-half = { workspace = true }
 # HDR metadata on the window's swapchain (Vulkan; no-op elsewhere)
 lcc-hdrmeta = { workspace = true }
 bytemuck = { workspace = true }

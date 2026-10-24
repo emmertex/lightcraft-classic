@@ -274,16 +274,20 @@ fn loupe(app: &mut LccApp, ui: &mut egui::Ui, area: Rect, id: PhotoId) {
     let ppp = ui.ctx().pixels_per_point();
     let side = super::detail::texture_side(ui.ctx()).clamp(64, 4096);
     let (w, h) = (((area.width() * ppp) as usize).clamp(64, side), ((area.height() * ppp) as usize).clamp(64, side));
-    if let Some(job) = app.session.loupe_job(id, w, h, true)
+    // an HDR edit on an HDR display: its HDR render, as in the loupe (drafts while it is edited)
+    let hdr_key =
+        app.session.render_job(id, w, h, false, true).and_then(|job| super::detail::request_hdr(app, crate::render::HDR_SECOND, job, true, 94));
+    super::detail::upload_hdr_views(app);
+    let hdr = super::detail::hdr_texture(app, crate::render::HDR_SECOND, id, hdr_key);
+    // (while a drag shows its HDR frames here, no 8-bit render of each step as well)
+    if !(hdr.is_some() && super::detail::editing(app, id))
+        && let Some(job) = app.session.loupe_job(id, w, h, true)
         && app.renderer.textures.get(&Slot::Second).is_none_or(|t| t.key != job.key)
         && !app.renderer.is_pending(Slot::Second)
     {
         app.renderer.request(Slot::Second, job, 95);
     }
-    // An HDR edit on an HDR display, including interactive adjustments.
-    let hdr_key = app.session.render_job(id, w, h, false, true).and_then(|job| super::detail::request_hdr(app, crate::render::HDR_SECOND, job, 94));
-    super::detail::upload_hdr_views(app);
-    if let Some(v) = super::detail::hdr_texture(app, crate::render::HDR_SECOND, id, hdr_key) {
+    if let Some(v) = hdr {
         let [tw, th] = v.size;
         let s = (area.width() / tw.max(1) as f32).min(area.height() / th.max(1) as f32);
         let r = Rect::from_center_size(area.center(), vec2(tw as f32 * s, th as f32 * s));

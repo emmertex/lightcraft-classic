@@ -235,11 +235,17 @@ fn photo_tile(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, slot: Slot, area
     };
     let mut hdr_key = None;
     if let Some(job) = app.session.render_job(id, rw.max(8), rh.max(8), false, true) {
-        // Keep adjustment drafts on the same HDR output path.
+        // an HDR edit on an HDR display: also its HDR render, drawn over the 8-bit one (not in a
+        // pinch; in a slider drag, a draft only for the photo being edited)
         if !gesturing {
-            hdr_key = super::detail::request_hdr(app, hdr_view, job.clone(), 58);
+            hdr_key = super::detail::request_hdr(app, hdr_view, job.clone(), true, 58);
         }
-        app.renderer.request(slot, job, 60);
+        super::detail::upload_hdr_views(app);
+        // (while a drag shows its HDR frames here, no 8-bit render of each step under them)
+        let hdr_drafts = super::detail::editing(app, id) && super::detail::hdr_texture(app, hdr_view, id, hdr_key).is_some();
+        if !hdr_drafts || app.renderer.textures.get(&slot).is_none_or(|t| t.photo != id) {
+            app.renderer.request(slot, job, 60);
+        }
     }
     super::detail::upload_hdr_views(app);
     if let Some(job) = app.session.thumb_job(id, 256) {
@@ -571,7 +577,6 @@ fn zoomed_tiles(
         Some(view) => {
             ctx.data_mut(|d| d.insert_temp(memory_id, view));
             super::detail::draw_window(p, app, &c, &v, &view);
-            super::detail::draw_hdr_window(p, app, &c, &v, &view);
         }
         None => {
             ctx.data_mut(|d| d.remove::<crate::region::RegionView>(memory_id));

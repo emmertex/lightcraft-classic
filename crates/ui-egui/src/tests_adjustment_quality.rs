@@ -183,7 +183,7 @@ fn high_quality_adjustment_hdr_jobs_keep_full_quality_and_extended_values() {
     h.app.session.execute("develop.set", &json!({"values": {"light.exposure": 3.0}})).unwrap();
     h.app.session.begin_interaction("Exposure").unwrap();
     let job = h.app.session.render_job(PhotoId(1), 320, 240, false, true).unwrap();
-    assert!(crate::panels::detail::request_hdr(&mut h.app, crate::render::HDR_LOUPE, job, 98).is_some());
+    assert!(crate::panels::detail::request_hdr(&mut h.app, crate::render::HDR_LOUPE, job, true, 98).is_some());
     let live = latest(&work, Slot::HdrView(crate::render::HDR_LOUPE));
     assert_eq!(live.request.quality, Quality::Full);
     assert_eq!(live.request.depth, lcc_pipeline::OutputDepth::F32Hdr);
@@ -372,13 +372,15 @@ fn slow_hdr_renders_make_a_high_quality_drag_fall_back() {
         w.ms = crate::region::HQ_BUDGET_MS * 0.2;
         w.hdr_ms = Some(crate::region::HQ_BUDGET_MS * 4.0);
     }
+    let from = work.borrow().asked.len();
     h.app.session.begin_interaction("Exposure").unwrap();
     for i in 1..=6 {
         h.app.session.execute("develop.set", &json!({"values": {"light.exposure": f64::from(i) * 0.1}})).unwrap();
         h.step();
         h.step();
     }
-    assert_eq!(latest(&work, Slot::Main).request.quality, Quality::Draft);
+    // (the HDR texture is what shows the drag: no full-quality 8-bit render is asked under it)
+    assert!(main_jobs_since(&work, from).iter().all(|j| j.request.quality == Quality::Draft));
     assert_eq!(latest(&work, Slot::HdrView(crate::render::HDR_LOUPE)).request.quality, Quality::Draft);
     h.app.session.end_interaction().unwrap();
     assert!(h.settle(TIMEOUT));

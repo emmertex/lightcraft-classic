@@ -51,6 +51,7 @@ mod focus_scan;
 pub mod folder_watch;
 pub mod fonts;
 pub mod guard;
+pub mod hdr_texture;
 pub mod history_groups;
 pub mod import;
 mod import_move;
