@@ -48,6 +48,23 @@ pub(crate) fn pan_to(app: &mut LccApp, u: f32, v: f32) {
     app.ui.pan = (u, v);
 }
 
+/// Where the photo goes in the well: the thumbnail's own shape once it has one (it shows the
+/// crop), else the original's `(width, height)` while it loads.
+fn image_rect(inner: Rect, original: Option<(u32, u32)>, thumb: Option<[usize; 2]>) -> Rect {
+    let aspect = match (thumb, original) {
+        (Some([w, h]), _) => w.max(1) as f32 / h.max(1) as f32,
+        (None, Some((w, h))) => w.max(1) as f32 / h.max(1) as f32,
+        (None, None) => 1.5,
+    };
+    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.5 };
+    let (iw, ih) = if inner.width() / inner.height().max(1.0) > aspect {
+        (inner.height() * aspect, inner.height())
+    } else {
+        (inner.width(), inner.width() / aspect)
+    };
+    Rect::from_center_size(inner.center(), vec2(iw, ih))
+}
+
 /// A small disclosure triangle (down when `open`), painted (no font glyph needed).
 fn triangle(p: &egui::Painter, c: egui::Pos2, open: bool, col: Color32) {
     let pts = if open {
@@ -125,19 +142,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         return;
     };
     let inner = well.shrink(10.0);
-    let aspect = app.session.catalog.photo(id).map(|ph| ph.width.max(1) as f32 / ph.height.max(1) as f32).unwrap_or(1.5);
-    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.5 };
-    let (iw, ih) = if inner.width() / inner.height().max(1.0) > aspect {
-        (inner.height() * aspect, inner.height())
-    } else {
-        (inner.width(), inner.width() / aspect)
-    };
-    let img = Rect::from_center_size(inner.center(), vec2(iw, ih));
     // Ask for the thumbnail ourselves: launched straight into Develop, no grid or filmstrip has
     // requested it yet. Only when missing, so we don't fight the grid over its size.
     if app.renderer.thumb(id).is_none() {
         super::grid::request_thumb(app, id, 256, 8);
     }
+    let original = app.session.catalog.photo(id).map(|ph| (ph.width, ph.height));
+    let img = image_rect(inner, original, app.renderer.thumb(id).map(|tex| tex.size));
     match app.renderer.thumb(id) {
         Some(tex) => p.image(tex.tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE),
         None => p.rect_filled(img, 0.0, Color32::from_gray(40)),
@@ -158,5 +169,26 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         && let Some(q) = resp.interact_pointer_pos()
     {
         pan_to(app, (q.x - img.left()) / img.width().max(1.0), (q.y - img.top()) / img.height().max(1.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cropped_thumbnail_keeps_its_own_shape() {
+        let inner = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
+        let shape = |r: Rect| r.width() / r.height();
+        // a 3:2 original cropped square: drawn square, not stretched back to 3:2
+        let square = image_rect(inner, Some((6000, 4000)), Some([256, 256]));
+        assert!((shape(square) - 1.0).abs() < 0.01, "{square:?}");
+        assert!(inner.contains_rect(square));
+        // a landscape original cropped to portrait
+        let portrait = image_rect(inner, Some((6000, 4000)), Some([171, 256]));
+        assert!((shape(portrait) - 171.0 / 256.0).abs() < 0.01, "{portrait:?}");
+        // no thumbnail yet: the original's shape
+        let loading = image_rect(inner, Some((6000, 4000)), None);
+        assert!((shape(loading) - 1.5).abs() < 0.01, "{loading:?}");
     }
 }
