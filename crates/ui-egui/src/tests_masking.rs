@@ -1280,10 +1280,14 @@ fn open_original_in_external_editor_hands_over_the_raw_itself() {
     assert_eq!(std::fs::read(&a_path).unwrap(), b"raw sensor data", "the original is left as it is");
     assert!(std::fs::read_dir(&dir).unwrap().count() == 2, "nothing is written next to the originals");
 
-    // the editor can be named per call; the active photo must have a file for the menu
-    let r = exec(&mut h, "photo.openOriginalInExternal", json!({"ids": [a.0], "app": "/opt/dxo"}));
+    // the app can name the editor per call, an agent over the control channel can't; the active
+    // photo must have a file for the menu
+    let r = h.app.run("photo.openOriginalInExternal", json!({"ids": [a.0], "app": "/opt/dxo"})).unwrap();
     assert_eq!(r["opened"][0]["path"], a_path.as_str());
     assert_eq!(opened.lock().unwrap().last().unwrap().1, "/opt/dxo");
+    let r = h.request("engine.execute", json!({"command": "photo.openOriginalInExternal", "params": {"ids": [a.0], "app": "/bin/sh"}}), T);
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(opened.lock().unwrap().last().unwrap().1, "/opt/dxo", "nothing more opened");
     exec(&mut h, "library.select", json!({"ids": [a.0]}));
     assert!(crate::menus::ui_enabled(&h.app, "photo.openOriginalInExternal"));
     exec(&mut h, "library.select", json!({"ids": [demo.0]}));

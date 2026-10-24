@@ -222,6 +222,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "engine.execute" | "ui.menu.invoke" | "command" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+            // a request from outside the app (an agent, a script): the program comes only from
+            // what the user set up
+            if let Err(e) = lcc_engine::cmd::edit_in::refuse_program_choice(&mut app.session, id, &params) {
+                return err(e);
+            }
             let r = app.run(id, params);
             ctx.request_repaint();
             wrap(r)
@@ -393,6 +398,14 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             lcc_develop::presets::deep_merge(&mut v, p);
             match serde_json::from_value::<crate::UiState>(v) {
                 Ok(mut u) => {
+                    // the editors Edit In starts are the user's to choose, in Settings (as for
+                    // `engine.execute` above)
+                    let (old, new) = (&app.ui.settings, &u.settings);
+                    if (&old.external_editor, &old.photocraft_path) != (&new.external_editor, &new.photocraft_path) {
+                        return err("ui.set: `settings.externalEditor` and `settings.photocraftPath` choose the program the app starts, so \
+                             they're set only in Settings ▸ External Editing, not over MCP or the control channel"
+                            .to_string());
+                    }
                     if let Err(error) = crate::docking::set_widths(&mut u, p) {
                         return err(error);
                     }

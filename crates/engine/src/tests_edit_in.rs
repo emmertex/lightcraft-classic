@@ -246,3 +246,93 @@ fn launching_the_editor_goes_through_the_desktop_seam() {
     assert!(matches!(calls.as_slice(), [crate::desktop::Request::Launch(line)] if line.contains(&path)), "{calls:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What an agent may ask for (MCP, the control channel, an action): every parameter that chooses a
+/// program is refused, on every command that takes one; a saved preset by name is not.
+#[test]
+fn agents_cannot_choose_the_program_edit_in_starts() {
+    use crate::cmd::edit_in::refuse_program_choice;
+    let dir = temp_dir("refuse");
+    let mut s = session(&dir);
+    for (command, keys) in [
+        ("photo.editIn", &["app", "args", "control"][..]),
+        ("photo.openAsLayers", &["app", "args", "control"][..]),
+        ("photo.editInPhotoCraft", &["app"][..]),
+        ("photo.editInExternal", &["app"][..]),
+        ("photo.openOriginalInExternal", &["app"][..]),
+    ] {
+        for key in keys {
+            let e = refuse_program_choice(&mut s, command, &json!({"preset": "Mine", "launch": true, *key: "x"})).unwrap_err();
+            assert!(e.contains(command) && e.contains(&format!("`{key}`")) && e.contains("preset"), "{e}");
+        }
+        refuse_program_choice(&mut s, command, &json!({"preset": "Mine", "launch": true})).unwrap();
+        refuse_program_choice(&mut s, command, &json!({"app": null})).unwrap();
+    }
+    refuse_program_choice(&mut s, "photo.rate", &json!({"app": "x"})).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An agent can still save a preset's other settings, but not set or change the program it starts.
+#[test]
+fn agents_save_presets_but_not_their_program() {
+    use crate::cmd::edit_in::refuse_program_choice;
+    let dir = temp_dir("refuse-save");
+    let mut s = session(&dir);
+    // the user's own preset, typed in the dialog
+    s.execute("editIn.savePreset", &json!({"name": "Gimp", "app": "/usr/bin/gimp", "args": ["-n"]})).unwrap();
+    let save = "editIn.savePreset";
+    for p in [
+        json!({"name": "Gimp", "app": "/bin/sh", "args": ["-n"]}),
+        json!({"name": "Gimp", "app": "/usr/bin/gimp", "args": ["-c", "x"]}),
+        json!({"name": "Gimp", "app": "/usr/bin/gimp", "args": ["-n"], "control": {"port": 9, "tokenFile": "/t", "root": "/"}}),
+        json!({"name": "Gimp", "bitDepth": 8}), // would drop the program for the default opener
+        json!({"name": "New", "app": "/bin/sh"}),
+        json!({"name": " Gimp ", "app": "/bin/sh", "args": ["-n"]}),
+    ] {
+        let e = refuse_program_choice(&mut s, save, &p).unwrap_err();
+        assert!(e.contains("preset"), "{p}: {e}");
+    }
+    refuse_program_choice(&mut s, save, &json!({"name": "Gimp", "app": "/usr/bin/gimp", "args": ["-n"], "bitDepth": 8})).unwrap();
+    refuse_program_choice(&mut s, save, &json!({"name": "New", "bitDepth": 8})).unwrap();
+    // a malformed preset is left for the command to report
+    refuse_program_choice(&mut s, save, &json!({"name": 3})).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A saved action starts only programs the user set up: a step that chooses one stops the action
+/// there, after the steps before it ran; the command line can still choose one.
+#[test]
+fn an_action_step_that_chooses_a_program_stops_the_action() {
+    let dir = temp_dir("refuse-action");
+    let src = dir.join("pic.png");
+    write_png(&src, 5, 16, 16);
+    let mut s = session(&dir);
+    let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
+    s.desktop = desktop.clone();
+    let id = import(&mut s, &src);
+    for (i, (command, params)) in [
+        ("photo.editIn", json!({"mode": "copy", "app": "/bin/sh", "args": ["-c", "x"], "launch": true})),
+        ("photo.openAsLayers", json!({"args": ["-c", "x"], "launch": true})),
+        ("editIn.savePreset", json!({"name": "Sneaky", "app": "/bin/sh"})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("Rate then {command}");
+        let steps = json!([{"command": "photo.rate", "params": {"rating": i + 1}}, {"command": command, "params": params}]);
+        s.execute("actions.save", &json!({"action": {"name": name, "steps": steps}})).unwrap();
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        let e = s.execute("actions.play", &json!({"name": name})).unwrap_err().to_string();
+        assert!(e.contains("step 2") && e.contains(command) && e.contains("preset"), "{e}");
+        assert_eq!(s.catalog.photo(id).unwrap().rating, i as u8 + 1, "the step before it ran");
+    }
+    assert!(desktop.requests().is_empty(), "nothing started: {:?}", desktop.requests());
+    assert!(s.execute("editIn.presets", &json!({})).unwrap()["user"].as_array().unwrap().is_empty(), "no preset saved");
+    assert_eq!(s.catalog.len(), 1, "no copy written");
+
+    // the command line (a direct call) still chooses the program
+    let r = s.execute("photo.editIn", &json!({"mode": "copy", "app": "/opt/ed", "args": ["-n"], "launch": true})).unwrap();
+    let calls = desktop.requests();
+    assert!(matches!(calls.as_slice(), [crate::desktop::Request::Launch(line)] if line.first().is_some_and(|a| a == "/opt/ed")), "{calls:?} {r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -893,4 +893,72 @@ mod tests {
         assert_eq!(watched_files(), 0, "the exited file is removed from the watch table");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Over the control channel (an agent, a script) the program Edit In starts comes only from
+    /// what the user set up: a request that chooses one is refused and starts nothing, and so is
+    /// `ui.set` changing the editors in Settings. The app's own dialogs and Settings still choose.
+    #[test]
+    fn the_control_channel_cannot_choose_the_program() {
+        let dir = temp("agent");
+        let src = dir.join("pic.png");
+        png(&src, 20, 12, 4);
+        let opened = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let o = opened.clone();
+        let services = crate::Services {
+            open_with: Some(Box::new(move |path: &str, app: &str| {
+                o.lock().unwrap().push((path.to_string(), app.to_string()));
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut s = lcc_engine::Session::new().with_fs();
+        s.workflow = lcc_engine::cmd::actions::Workflow::in_dir(Some(dir.join("settings")));
+        let mut h = crate::headless::Headless::new(LccApp::new(s, services), [900.0, 600.0], 1.0);
+        h.app.session.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+        h.app.ui.settings.external_editor = "/usr/bin/gimp".into(); // the user's own, from Settings
+        let t = std::time::Duration::from_secs(30);
+        let files = |dir: &std::path::Path| std::fs::read_dir(dir).unwrap().count();
+        let before = files(&dir);
+        for (command, params) in [
+            ("photo.editIn", json!({"mode": "copy", "app": "/bin/sh", "args": ["-c", "x"]})),
+            ("photo.openAsLayers", json!({"control": {"port": 9, "tokenFile": "/t", "root": "/"}})),
+            ("photo.editInExternal", json!({"app": "/bin/sh"})),
+            ("photo.editInPhotoCraft", json!({"app": "/bin/sh"})),
+            ("photo.openOriginalInExternal", json!({"app": "/bin/sh"})),
+        ] {
+            let r = h.request("engine.execute", json!({"command": command, "params": params}), t);
+            assert_eq!(r["ok"], false, "{command} is refused: {r}");
+            assert!(r["error"].as_str().unwrap_or_default().contains("preset"), "{r}");
+        }
+        assert!(opened.lock().unwrap().is_empty(), "nothing started: {:?}", opened.lock().unwrap());
+        assert_eq!(files(&dir), before, "no copy written");
+
+        // nor can it change the editors Settings starts; other settings it still can
+        for key in ["externalEditor", "photocraftPath"] {
+            let r = h.request("ui.set", json!({"settings": {key: "/bin/sh"}}), t);
+            assert_eq!(r["ok"], false, "{key} is refused: {r}");
+        }
+        assert_eq!((h.app.ui.settings.external_editor.as_str(), h.app.ui.settings.photocraft_path.as_str()), ("/usr/bin/gimp", ""));
+        let r = h.request("ui.set", json!({"settings": {"externalEditor": "/usr/bin/gimp", "askBeforeDelete": false}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(!h.app.ui.settings.confirm_delete);
+
+        // without a program, the editor from Settings opens as before
+        let r = h.request("engine.execute", json!({"command": "photo.editInExternal", "params": {}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(matches!(opened.lock().unwrap().as_slice(), [(_, app)] if app == "/usr/bin/gimp"), "{:?}", opened.lock().unwrap());
+
+        // a preset the user saved opens its program by name
+        h.app.session.execute("editIn.savePreset", &json!({"name": "Mine", "app": "/opt/mine"})).unwrap();
+        opened.lock().unwrap().clear();
+        let r = h.request("engine.execute", json!({"command": "photo.editIn", "params": {"preset": "Mine", "mode": "copy"}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(matches!(opened.lock().unwrap().as_slice(), [(_, app)] if app == "/opt/mine"), "{:?}", opened.lock().unwrap());
+
+        // the Edit In Presets dialog runs an unsaved draft through `app.run`, which still chooses
+        opened.lock().unwrap().clear();
+        h.app.run("photo.editIn", json!({"mode": "copy", "app": "/opt/ed"})).unwrap();
+        assert!(matches!(opened.lock().unwrap().as_slice(), [(_, app)] if app == "/opt/ed"), "{:?}", opened.lock().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

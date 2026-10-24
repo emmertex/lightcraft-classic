@@ -196,6 +196,45 @@ fn store_presets(s: &mut Session, cmd: &str, list: Vec<EditorPreset>) -> Result<
     Ok(())
 }
 
+/// The commands whose parameters can choose a program for the app to start, and those parameters
+/// (the last three are the desktop app's Edit In menu commands).
+const PROGRAM_PARAMS: [(&str, &[&str]); 6] = [
+    ("photo.editIn", &["app", "args", "control"]),
+    ("photo.openAsLayers", &["app", "args", "control"]),
+    ("editIn.savePreset", &["app", "args", "control"]),
+    ("photo.editInPhotoCraft", &["app"]),
+    ("photo.editInExternal", &["app"]),
+    ("photo.openOriginalInExternal", &["app"]),
+];
+
+/// `Err` when running `command` with `params` would choose a program for the app to start.
+///
+/// MCP, the control channel and action playback ask this before they run a command: a request
+/// there may come from an agent acting on text it didn't write (a caption, a keyword, a server's
+/// data), so the program comes only from what the user set up (a saved Edit In preset, Settings ▸
+/// External Editing). The command line and the app's own dialogs don't ask. `editIn.savePreset`
+/// is refused only when the preset's program would change, so its other fields can still be saved.
+pub fn refuse_program_choice(s: &mut Session, command: &str, params: &Value) -> std::result::Result<(), String> {
+    let Some((_, keys)) = PROGRAM_PARAMS.iter().find(|(c, _)| *c == command) else { return Ok(()) };
+    let chosen = if command == "editIn.savePreset" {
+        let Ok(new) = serde_json::from_value::<EditorPreset>(params.clone()) else { return Ok(()) }; // the command reports it
+        let name = new.name.trim();
+        let old = user_presets(s, command).map_err(|e| e.to_string())?.into_iter().find(|x| x.name == name).unwrap_or_default();
+        (new.app, new.args, new.control) != (old.app, old.args, old.control)
+    } else {
+        keys.iter().any(|k| params.get(*k).is_some_and(|v| !v.is_null()))
+    };
+    if !chosen {
+        return Ok(());
+    }
+    let named = keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ");
+    Err(format!(
+        "{command}: {named} choose the program the app starts, so they can be given only on the command line or in the app's \
+         own dialogs, not over MCP, the control channel or in an action. Use a saved Edit In preset (`preset`; Photo ▸ Edit In \
+         ▸ Edit In Presets…) or the editor set in Settings ▸ External Editing."
+    ))
+}
+
 fn presets(s: &mut Session, _: &Value) -> Result<Value> {
     let user = user_presets(s, "editIn.presets")?;
     Ok(json!({"builtin": builtin_presets(), "user": user}))
@@ -669,16 +708,36 @@ fn hand_over(s: &mut Session, pr: &EditorPreset, path: &Path, edited: u64, p: &V
 
 /// The command line that opens `path` in `app` with `args`.
 pub fn command_line(app: &str, args: &[String], path: &Path) -> Vec<String> {
+    let os = if cfg!(target_os = "macos") {
+        Os::Mac
+    } else if cfg!(windows) {
+        Os::Windows
+    } else {
+        Os::Other
+    };
+    command_line_on(os, app, args, path)
+}
+
+/// The system a command line is built for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Os {
+    Mac,
+    Windows,
+    Other,
+}
+
+/// [`command_line`] for `os`. The system default opener never goes through a shell: on Windows
+/// it is Explorer, as in the desktop app, since `cmd /C start` would run a second command from a
+/// file name holding `&`.
+fn command_line_on(os: Os, app: &str, args: &[String], path: &Path) -> Vec<String> {
     let file = path.to_string_lossy().to_string();
     let mut v: Vec<String> = if app.is_empty() {
-        if cfg!(target_os = "macos") {
-            vec!["open".into()]
-        } else if cfg!(windows) {
-            vec!["cmd".into(), "/C".into(), "start".into(), String::new()]
-        } else {
-            vec!["xdg-open".into()]
+        match os {
+            Os::Mac => vec!["open".into()],
+            Os::Windows => vec!["explorer.exe".into()],
+            Os::Other => vec!["xdg-open".into()],
         }
-    } else if cfg!(target_os = "macos") && !app.contains('/') {
+    } else if os == Os::Mac && !app.contains('/') {
         vec!["open".into(), "-a".into(), app.into(), "--args".into()]
     } else {
         vec![app.into()]
@@ -697,7 +756,7 @@ pub fn command_line(app: &str, args: &[String], path: &Path) -> Vec<String> {
         if v.get(3).is_some_and(|x| x == "--args") && args.is_empty() {
             v.truncate(3);
         }
-        v.push(file);
+        v.push(if os == Os::Windows && app.is_empty() { file.replace('/', "\\") } else { file });
     }
     v
 }
@@ -740,7 +799,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Save Edit In Preset",
             [],
             None,
-            "{name, app?, args?: [..., \"{file}\"?], format?: tiff|psd, colorSpace?: srgb|adobeRgb|displayP3|proPhoto, bitDepth?: 8|16, mode?: copyWithAdjustments|copy|original, naming?: \"{name}-Edit\", stack?: true, control?: {port, tokenFile, root}} — add or replace an external editor preset (kept in editors.json in the settings folder) → the preset",
+            "{name, app?, args?: [..., \"{file}\"?], format?: tiff|psd, colorSpace?: srgb|adobeRgb|displayP3|proPhoto, bitDepth?: 8|16, mode?: copyWithAdjustments|copy|original, naming?: \"{name}-Edit\", stack?: true, control?: {port, tokenFile, root}} — add or replace an external editor preset (kept in editors.json in the settings folder); app, args and control choose a program, so over MCP, the control channel or in an action they can't be set or changed → the preset",
             always,
             save_preset
         ),
@@ -760,7 +819,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
                 "Edit In…",
                 ["Photo", "Edit In"],
                 None,
-                "{id?, preset?: name (default \"External Editor\"), mode?, format?, colorSpace?, bitDepth?, app?, args?, naming?, stack?, dir?, launch?: false, wait?: false} — Edit In with Lightroom's options: copyWithAdjustments renders the photo with its edits (TIFF, or a layered PSD), copy copies the original file, original edits the file itself (copy/original: JPEG, TIFF, PNG, PSD, WebP only). A new file is added to the library, stacked directly above the photo it was made from (inside that photo's stack when it has one) and selected; TIFF and PSD copies carry an xmpMM:DerivedFrom link to it, so a re-import stacks them again. launch opens it in the preset's application (or over PhotoCraft's control channel); wait (with launch) starts the application with --wait, returns when it exits and reloads the photo → {path, id, original, mode, openWith: {path, app, args, reload, preset, control}, opened}",
+                "{id?, preset?: name (default \"External Editor\"), mode?, format?, colorSpace?, bitDepth?, app?, args?, naming?, stack?, dir?, launch?: false, wait?: false} — Edit In with Lightroom's options: copyWithAdjustments renders the photo with its edits (TIFF, or a layered PSD), copy copies the original file, original edits the file itself (copy/original: JPEG, TIFF, PNG, PSD, WebP only). A new file is added to the library, stacked directly above the photo it was made from (inside that photo's stack when it has one) and selected; TIFF and PSD copies carry an xmpMM:DerivedFrom link to it, so a re-import stacks them again. launch opens it in the preset's application (or over PhotoCraft's control channel); app and args (and a preset's control) choose a program, so they're for the command line and the Edit In Presets dialog only: over MCP, the control channel or in an action, name a saved preset instead; wait (with launch) starts the application with --wait, returns when it exits and reloads the photo → {path, id, original, mode, openWith: {path, app, args, reload, preset, control}, opened}",
                 has_active,
                 edit_in
             )
@@ -770,7 +829,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Open as Layers in PhotoCraft…",
             ["Photo", "Edit In"],
             None,
-            "{ids?, preset?: \"PhotoCraft\", colorSpace?, bitDepth?: 8|16, name?, dir?, stack?: true, launch?: false} — one layered PSD (16-bit unless the preset or bitDepth says 8) from the selected photos (2–64), each rendered with its edits as a layer named after it (the first selected on top), added to the library and stacked on the active photo → {path, id, layers, openWith, opened}",
+            "{ids?, preset?: \"PhotoCraft\", colorSpace?, bitDepth?: 8|16, name?, dir?, stack?: true, launch?: false} (app, args and control choose a program: command line only, never over MCP, the control channel or in an action) — one layered PSD (16-bit unless the preset or bitDepth says 8) from the selected photos (2–64), each rendered with its edits as a layer named after it (the first selected on top), added to the library and stacked on the active photo → {path, id, layers, openWith, opened}",
             has_selection,
             open_as_layers
         ),
@@ -788,6 +847,18 @@ mod tests {
         assert_eq!(l, vec!["/opt/pc/photocraft", "--new-window", "/x/a b.psd"]);
         let l = command_line("/usr/bin/ed", &["--open={file}".into(), "-v".into()], p);
         assert_eq!(l, vec!["/usr/bin/ed", "--open=/x/a b.psd", "-v"]);
+    }
+
+    /// The system default opener gets the file as one argument, never through a shell, so a name
+    /// holding `&` opens that file and starts nothing else.
+    #[test]
+    fn the_default_opener_takes_the_file_without_a_shell() {
+        let p = Path::new("C:/x/a&calc.jpg");
+        assert_eq!(command_line_on(Os::Windows, "", &[], p), vec!["explorer.exe", "C:\\x\\a&calc.jpg"]);
+        assert_eq!(command_line_on(Os::Mac, "", &[], p), vec!["open", "C:/x/a&calc.jpg"]);
+        assert_eq!(command_line_on(Os::Other, "", &[], p), vec!["xdg-open", "C:/x/a&calc.jpg"]);
+        // a program the user chose gets the path as written
+        assert_eq!(command_line_on(Os::Windows, "C:/ed.exe", &[], p), vec!["C:/ed.exe", "C:/x/a&calc.jpg"]);
     }
 
     #[test]

@@ -19,6 +19,12 @@ arguments (`{file}` marks where the path goes), the format, colour space (sRGB, 
 bit depth. Built-in presets: *External Editor* (the editor set in Settings → General, or the system default) and
 *PhotoCraft*. Add your own with `editIn.savePreset`; `editIn.presets` lists them.
 
+Only you choose which program Edit In starts. Over MCP, the control channel and in actions, `photo.editIn` and
+`photo.openAsLayers` take no `app`, `args` or `control`, `editIn.savePreset` can't set or change them, the Edit In
+menu commands take no `app`, and `ui.set` can't change the editors in Settings → External Editing: name a saved preset
+(`preset=…`) instead. On the command line (`<cli> run photo.editIn app=… launch=true wait=true`, without `--connect`,
+which goes through the running app's control channel) and in the Edit In Presets dialog they work as before.
+
 ## Actions
 
 An action is a named, recorded sequence of commands, replayed on the selection, like Photoshop actions or Lightroom

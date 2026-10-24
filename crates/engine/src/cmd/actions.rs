@@ -226,10 +226,13 @@ fn run_steps(s: &mut Session, name: &str, steps: &[Step], photos: Vec<lcc_catalo
             if lcc_actions::is_navigation(&st.command) && photo.is_some() {
                 continue;
             }
-            s.execute(&st.command, &st.params).map_err(|e| {
+            let stopped = |e: String| {
                 let on = photo.map(|id| format!(" on photo {}", id.0)).unwrap_or_default();
                 bad(C, format!("`{name}` stopped at step {} (`{}`){on}: {e}", i + 1, st.command))
-            })?;
+            };
+            // a saved action may not have come from the user: it starts only programs they set up
+            super::edit_in::refuse_program_choice(s, &st.command, &st.params).map_err(stopped)?;
+            s.execute(&st.command, &st.params).map_err(|e| stopped(e.to_string()))?;
             ran += 1;
         }
     }

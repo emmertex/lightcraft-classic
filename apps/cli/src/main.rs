@@ -706,6 +706,8 @@ fn run(args: &[String]) -> Result<(), String> {
                     h.session.execute("library.select", &json!({"ids": ids, "active": first})).map_err(|e| e.to_string())?;
                 }
             }
+            // the user at a shell may name the program Edit In starts; `mcp` may not
+            h.trusted = true;
             Box::new(h)
         }
     };

@@ -616,6 +616,36 @@ fn mcp_over_stdio_sets_exposure_and_renders() {
     assert!(b > a + 10.0, "{a} → {b}");
 }
 
+/// `mcp` serves agents: it never lets a request choose the program Edit In starts (`run` does).
+#[cfg(unix)]
+#[test]
+fn mcp_refuses_a_program_chosen_by_the_request() {
+    let input = tmp("editin-mcp.png");
+    gradient_png(&input);
+    let marker = tmp("editin-mcp-started");
+    let _ = std::fs::remove_file(&marker);
+    let mut child =
+        Command::new(BIN).args(["mcp", input.to_str().unwrap()]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut rpc = |id: u64, method: &str, params: Value| -> Value {
+        writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    rpc(1, "initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "cli-test", "version": "0"}}));
+    // `touch` would leave the marker behind if it were started
+    let params = json!({"mode": "copy", "app": "/usr/bin/touch", "args": [marker.to_str().unwrap()], "launch": true, "wait": true});
+    let r = rpc(2, "tools/call", json!({"name": "cmd_photo_editIn", "arguments": params}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r.to_string().contains("preset"), "{r}");
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    assert!(!marker.exists(), "no program was started");
+}
+
 #[test]
 fn render_subcommand() {
     let input = tmp("r-in.png");

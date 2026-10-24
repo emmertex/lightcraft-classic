@@ -14,6 +14,9 @@ use crate::backend::{Backend, ProgressHook};
 pub struct Headless {
     pub session: Session,
     progress: Option<ProgressHook>,
+    /// The caller is the user at a shell (`run`), not an agent (`mcp`): it may choose the program
+    /// Edit In starts. Off unless set.
+    pub trusted: bool,
 }
 
 impl Drop for Headless {
@@ -45,7 +48,7 @@ impl Default for Headless {
 
 impl Headless {
     pub fn new(session: Session) -> Self {
-        Self { session, progress: None }
+        Self { session, progress: None, trusted: false }
     }
 
     /// A headless session with the procedurally generated demo library.
@@ -172,6 +175,10 @@ impl Backend for Headless {
             "engine.execute" | "ui.menu.invoke" | "command" => {
                 let id = p.get("command").or(p.get("id")).and_then(Value::as_str).ok_or("missing `command`")?;
                 let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+                // an agent's request: the program comes only from what the user set up
+                if !self.trusted {
+                    lcc_engine::cmd::edit_in::refuse_program_choice(&mut self.session, id, &params)?;
+                }
                 if id == "app.export" {
                     return self.export(&params);
                 }
@@ -271,6 +278,49 @@ mod tests {
         found.sort();
         assert_eq!(found, expected);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An agent's request can't choose the program Edit In starts: it is refused and starts or
+    /// writes nothing, while a preset the user saved still opens by name.
+    #[test]
+    fn edit_in_takes_the_program_only_from_a_saved_preset() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-editin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[40, 3, 9, 255]; 64] };
+        let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+        std::fs::write(dir.join("a.png"), png).unwrap();
+        let mut session = Session::new().with_fs();
+        session.workflow = lcc_engine::cmd::actions::Workflow::in_dir(Some(dir.join("settings")));
+        let desktop = std::sync::Arc::new(lcc_engine::desktop::Recorder::default());
+        session.desktop = desktop.clone();
+        // the user's own preset, from the dialog or the command line
+        session.execute("editIn.savePreset", &json!({"name": "Mine", "app": "/opt/ed"})).unwrap();
+        let mut h = Headless::new(session);
+        h.call("engine.execute", json!({"command": "library.import", "params": {"paths": [dir.join("a.png").to_string_lossy()]}})).unwrap();
+        let files = || std::fs::read_dir(&dir).unwrap().count();
+        let (before, presets) = (files(), std::fs::read(dir.join("settings/editors.json")).unwrap());
+        for (command, params) in [
+            ("photo.editIn", json!({"mode": "copy", "app": "/bin/sh", "args": ["-c", "x"], "launch": true})),
+            ("photo.editIn", json!({"preset": "Mine", "args": ["-c", "x"], "launch": true})),
+            ("photo.openAsLayers", json!({"app": "/bin/sh", "launch": true})),
+            ("editIn.savePreset", json!({"name": "Mine", "app": "/bin/sh"})),
+        ] {
+            let e = h.call("engine.execute", json!({"command": command, "params": params})).unwrap_err();
+            assert!(e.contains("preset"), "{command}: {e}");
+        }
+        assert!(desktop.requests().is_empty(), "nothing started: {:?}", desktop.requests());
+        assert_eq!(files(), before, "no copy written");
+        assert_eq!(std::fs::read(dir.join("settings/editors.json")).unwrap(), presets, "presets unchanged");
+        // the saved preset opens its program
+        h.call("engine.execute", json!({"command": "photo.editIn", "params": {"preset": "Mine", "launch": true}})).unwrap();
+        let calls = desktop.requests();
+        assert!(
+            matches!(calls.as_slice(), [lcc_engine::desktop::Request::Launch(line)] if line.first().is_some_and(|a| a == "/opt/ed")),
+            "{calls:?}"
+        );
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Headless sessions look for the SAM 3 model where the desktop app does, and `segment.model.status` reports it (issue #619).
